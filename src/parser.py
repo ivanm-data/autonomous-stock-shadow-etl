@@ -131,6 +131,9 @@ def init_db() -> sqlite3.Connection:
         conn.execute('CREATE INDEX IF NOT EXISTS idx_report_date ON stocks(report_timestamp);')
         conn.execute('DROP INDEX IF EXISTS idx_unique_daily_item;')
         conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_daily_item ON stocks(SUBSTR(report_timestamp, 1, 10), item_name, sku);')
+        # Индексы для оптимизации load_inventory() - GROUP BY по item_name и sku
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_inventory_lookup ON stocks(item_name, sku, report_timestamp DESC);')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_category ON stocks(category);')
         
         # 1. СТАРАЯ ТАБЛИЦА: ОСНОВНАЯ ИСТОРИЯ СКЛАДА (остается для совместимости)
         # 2. НОВАЯ ТАБЛИЦА: РЕЕСТР ОПЕРАЦИОННЫХ АНОМАЛИЙ

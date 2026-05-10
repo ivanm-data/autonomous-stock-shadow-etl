@@ -86,22 +86,24 @@ def load_anomalies() -> pd.DataFrame:
 
 @st.cache_data(ttl=3600)
 def load_inventory() -> pd.DataFrame:
+    """Загружает инвентарь, используя GROUP BY для получения самой свежей записи на товар"""
     if not DB_PATH.exists(): return pd.DataFrame()
+    
     with get_connection() as conn:
-        latest_date = conn.execute("SELECT MAX(SUBSTR(report_timestamp, 1, 10)) FROM stocks").fetchone()[0]
-        
-        # Берем все данные как есть, без сложной SQL-логики
+        # Оптимизированный запрос: база сама отдает по одной самой свежей записи на каждый товар
+        # Используем MAX(report_timestamp) в GROUP BY для получения актуальных данных
         query = """
-            SELECT 
-                id as 'ID', 
-                sku as 'Артикул', 
-                item_name as 'Наименование', 
-                price as 'Цена', 
-                quantity as 'Остаток', 
+            SELECT
+                MAX(id) as 'ID',
+                sku as 'Артикул',
+                item_name as 'Наименование',
+                MAX(price) as 'Цена',
+                MAX(quantity) as 'Остаток',
                 category as 'Категория',
-                SUBSTR(report_timestamp, 1, 10) as 'last_seen_date',
-                report_timestamp
-            FROM stocks 
+                MAX(SUBSTR(report_timestamp, 1, 10)) as 'last_seen_date',
+                MAX(report_timestamp) as 'report_timestamp'
+            FROM stocks
+            GROUP BY item_name, sku, category
         """
         df = pd.read_sql_query(query, conn)
         
@@ -118,6 +120,7 @@ def load_inventory() -> pd.DataFrame:
             df = df.drop_duplicates(subset=['norm_name', 'norm_sku'], keep='first')
             
             # 4. Проставляем статусы актуальности
+            latest_date = df['last_seen_date'].max()
             df['actual'] = df['last_seen_date'] == latest_date
             
             # 5. Индекс для поиска (используем уже очищенные строки)

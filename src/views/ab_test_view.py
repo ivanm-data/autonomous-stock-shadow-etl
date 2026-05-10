@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 from pathlib import Path
+from app import verify_shadow_forecasts
 import db
 import ai_services
 

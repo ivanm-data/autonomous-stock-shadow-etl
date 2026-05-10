@@ -25,17 +25,63 @@ def get_db_stats():
         res = conn.execute("SELECT MIN(SUBSTR(report_timestamp, 1, 10)), MAX(SUBSTR(report_timestamp, 1, 10)), COUNT(DISTINCT SUBSTR(report_timestamp, 1, 10)) FROM stocks").fetchone()
         return {"start": res[0], "end": res[1], "days_count": res[2]}
 
-@st.cache_data(ttl=3600)
-def load_anomalies() -> pd.DataFrame:
-    if not DB_PATH.exists(): return pd.DataFrame()
+def update_anomaly_inbox():
+    """Фоновый сборщик: сохраняет найденные аномалии в персистентный буфер (Inbox)"""
+    if not DB_PATH.exists(): return
     with get_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS anomaly_inbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                detected_date DATE,
+                sku TEXT,
+                item_name TEXT,
+                qty_old INTEGER,
+                qty_new INTEGER,
+                delta INTEGER,
+                history_count INTEGER,
+                old_name_alias TEXT,
+                old_sku_alias TEXT,
+                UNIQUE(detected_date, item_name)
+            )
+        """)
+        
         cursor = conn.execute("SELECT DISTINCT SUBSTR(report_timestamp, 1, 10) FROM stocks ORDER BY 1 DESC LIMIT 2")
         dates = [row[0] for row in cursor.fetchall()]
-        if len(dates) < 2: return pd.DataFrame()
+        if len(dates) < 2: return
+        
+        today, yesterday = dates[0], dates[1]
         
         query = get_anomalies_query()
-        df = pd.read_sql_query(query, conn, params={"yesterday": dates[1], "today": dates[0]})
-        df.rename(columns={'sku': 'Артикул', 'item_name': 'Наименование', 'qty_old': 'Было', 'qty_new': 'Стало', 'delta': 'Дельта'}, inplace=True)
+        df = pd.read_sql_query(query, conn, params={"yesterday": yesterday, "today": today})
+        
+        for _, row in df.iterrows():
+            conn.execute("""
+                INSERT OR IGNORE INTO anomaly_inbox
+                (detected_date, sku, item_name, qty_old, qty_new, delta, history_count, old_name_alias, old_sku_alias)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (today, row['sku'], row['item_name'], row['qty_old'], row['qty_new'], row['delta'], row['history_count'], row['old_name_alias'], row['old_sku_alias']))
+        conn.commit()
+
+@st.cache_data(ttl=3600)
+def load_anomalies() -> pd.DataFrame:
+    """Теперь читает аномалии из надежного Inbox, а не вычисляет на лету"""
+    if not DB_PATH.exists(): return pd.DataFrame()
+    
+    update_anomaly_inbox() # Проверяем новые скачки перед загрузкой
+    
+    with get_connection() as conn:
+        df = pd.read_sql_query("""
+            SELECT
+                sku as 'Артикул',
+                item_name as 'Наименование',
+                qty_old as 'Было',
+                qty_new as 'Стало',
+                delta as 'Дельта',
+                history_count,
+                old_name_alias,
+                old_sku_alias
+            FROM anomaly_inbox
+        """, conn)
         return df
 
 @st.cache_data(ttl=3600)
@@ -91,9 +137,13 @@ def load_anomaly_report(status="Открыта") -> pd.DataFrame:
         return pd.read_sql_query(query, conn, params={"status": status})
     
 def save_anomaly_to_db(data: dict):
-    """Записывает инцидент в базу и сбрасывает кэш для обновления экрана"""
+    """Записывает инцидент в базу и удаляет из Inbox"""
     with get_connection() as conn:
         conn.execute(get_insert_anomaly_query(), data)
+        try:
+            conn.execute("DELETE FROM anomaly_inbox WHERE item_name = ?", (data['item_name'],))
+        except Exception:
+            pass
         conn.commit()
     st.cache_data.clear()
 

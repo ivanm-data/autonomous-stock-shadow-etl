@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import pandas as pd
 import streamlit as st
@@ -8,7 +9,18 @@ from queries import get_anomalies_query, get_insert_anomaly_query, get_close_ano
 
 # --- НАСТРОЙКИ ПУТЕЙ ---
 BASE_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = BASE_DIR / "data" / "stock_history.sqlite"
+CONFIG_PATH = BASE_DIR / "config.json"
+
+def load_config() -> dict:
+    """Загружает конфигурацию из config.json"""
+    if not CONFIG_PATH.exists():
+        raise FileNotFoundError(f"Конфигурационный файл не найден: {CONFIG_PATH}")
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+CONFIG = load_config()
+
+DB_PATH = BASE_DIR / CONFIG['paths']['data_dir'] / CONFIG['paths']['db_name']
 
 @contextmanager
 def get_connection(): 
@@ -165,10 +177,11 @@ def cancel_anomaly_in_db(anomaly_id: int, comment: str):
 @st.cache_data(ttl=3600)
 def load_dead_stock_analysis() -> pd.DataFrame:
     if not DB_PATH.exists(): return pd.DataFrame()
+    history_depth = CONFIG['database']['history_depth_days']
     with get_connection() as conn:
-        query = "SELECT SUBSTR(report_timestamp, 1, 10) as date, MAX(sku) as sku, category, item_name, price, quantity FROM stocks WHERE report_timestamp >= date('now', '-365 days') AND item_name IS NOT NULL GROUP BY date, item_name"
+        query = f"SELECT SUBSTR(report_timestamp, 1, 10) as date, MAX(sku) as sku, category, item_name, price, quantity FROM stocks WHERE report_timestamp >= date('now', '-{history_depth} days') AND item_name IS NOT NULL GROUP BY date, item_name"
         df = pd.read_sql_query(query, conn)
-        
+    
     if df.empty: return pd.DataFrame()
     df['date'] = pd.to_datetime(df['date'])
     current = df.sort_values(['item_name', 'date'], ascending=[True, False]).drop_duplicates('item_name').copy()
@@ -193,6 +206,7 @@ def load_dead_stock_analysis() -> pd.DataFrame:
 @st.cache_data(ttl=3600)
 def load_velocity_history(item_name: str, sku: str = "") -> pd.DataFrame:
     if not DB_PATH.exists() or not item_name: return pd.DataFrame()
+    history_depth = CONFIG['database']['history_depth_days']
     
     # Вспомогательная функция, чтобы не дублировать код
     def fetch_history_for_name(target_n, target_s=""):
@@ -202,9 +216,9 @@ def load_velocity_history(item_name: str, sku: str = "") -> pd.DataFrame:
         
         with get_connection() as conn:
             first_word = safe_name.split()[0] if safe_name else ""
-            query = "SELECT item_name, sku, SUBSTR(report_timestamp, 1, 10) as 'Дата', quantity as 'Остаток', report_timestamp FROM stocks WHERE report_timestamp >= date('now', '-365 days') AND item_name LIKE :fw_pattern"
+            query = f"SELECT item_name, sku, SUBSTR(report_timestamp, 1, 10) as 'Дата', quantity as 'Остаток', report_timestamp FROM stocks WHERE report_timestamp >= date('now', '-{history_depth} days') AND item_name LIKE :fw_pattern"
             df = pd.read_sql_query(query, conn, params={"fw_pattern": f"{first_word}%"})
-            
+        
         if not df.empty:
             df['clean_name'] = df['item_name'].astype(str).str.strip().str.replace(r'\s+', ' ', regex=True).str.lower().str.replace('ё', 'е')
             df['clean_sku'] = df['sku'].astype(str).str.strip().str.replace(r'\s+', ' ', regex=True).str.lower().str.replace('ё', 'е')
@@ -272,4 +286,4 @@ def get_all_historical_items() -> dict:
             is_active = (last_seen == latest_db_date) 
             result[name] = {"sku": sku, "is_active": is_active, "last_seen": last_seen}
             
-        return result
+    return result

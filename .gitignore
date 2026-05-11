@@ -35,3 +35,6 @@ crawler_state.json
 
 .streamlit/
 _workspace
+
+# Конфигурация с секретами
+config.json

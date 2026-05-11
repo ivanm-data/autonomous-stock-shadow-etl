@@ -10,10 +10,21 @@ import requests
 # --- БАЗОВЫЕ ПУТИ ---
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
-LAST_RUN_FILE = BASE_DIR / "logs" / "last_run.date"
+
+def load_config() -> dict:
+    """Загружает конфигурацию из config.json"""
+    if not CONFIG_PATH.exists():
+        raise FileNotFoundError(f"Конфигурационный файл не найден: {CONFIG_PATH}")
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+CONFIG = load_config()
+
+# --- ПУТИ ИЗ КОНФИГА ---
+LAST_RUN_FILE = BASE_DIR / CONFIG['paths']['last_run_file']
 PARSER_SCRIPT = BASE_DIR / "src" / "parser.py"
 FORECASTER_SCRIPT = BASE_DIR / "src" / "ai_forecaster.py"
-AI_PENDING_FILE = BASE_DIR / "logs" / "ai_pending.flag"
+AI_PENDING_FILE = BASE_DIR / CONFIG['paths']['ai_pending_flag']
 
 if sys.platform == "win32":
     VENV_PYTHON = BASE_DIR / "venv" / "Scripts" / "python.exe"
@@ -35,6 +46,9 @@ TARGET_URL = get_target_url()
 # --- ЛОГИКА АВТОЗАПУСКА ---
 def is_weekday() -> bool:
     # 0 = Понедельник, 4 = Пятница
+    work_on_weekends = CONFIG['scheduler']['work_on_weekends']
+    if work_on_weekends:
+        return True
     return datetime.now().astimezone().date().weekday() < 5
 
 def already_ran_today() -> bool:
@@ -48,7 +62,9 @@ def mark_as_run() -> None:
     # Pathlib позволяет писать в файл в одну строку
     LAST_RUN_FILE.write_text(str(datetime.now().astimezone().date()), encoding="utf-8")
 
-def wait_for_internet(timeout_mins: int = 20) -> bool:
+def wait_for_internet(timeout_mins: int = None) -> bool:
+    if timeout_mins is None:
+        timeout_mins = CONFIG['scheduler']['internet_wait_timeout_mins']
     print(f"⏳ Ожидание подключения к {TARGET_URL}...")
     end_time = time.time() + (timeout_mins * 60)
     
@@ -81,7 +97,7 @@ def main() -> None:
         time.sleep(5)
         return
 
-    if wait_for_internet(timeout_mins=20):
+    if wait_for_internet():
         print("🚀 Запускаем парсер...")
         time.sleep(2)
         
@@ -109,7 +125,7 @@ def main() -> None:
             print(f"❌ Ошибка во время работы парсера. Код выхода: {e.returncode}. Отметка не поставлена.")
             time.sleep(10)
     else:
-        print("❌ Не дождались интернета за 20 минут. Запуск отменен.")
+        print(f"❌ Не дождались интернета за {CONFIG['scheduler']['internet_wait_timeout_mins']} минут. Запуск отменен.")
         time.sleep(10)
 
 if __name__ == "__main__":

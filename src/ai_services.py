@@ -15,8 +15,17 @@ import streamlit as st
 # --- НАСТРОЙКИ ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 BASE_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = BASE_DIR / "data" / "stock_history.sqlite"
+CONFIG_PATH = BASE_DIR / "config.json"
 SECRETS_PATH = BASE_DIR / "src" / ".streamlit" / "secrets.toml"
+
+def load_config() -> dict:
+    """Загружает конфигурацию из config.json"""
+    if not CONFIG_PATH.exists():
+        raise FileNotFoundError(f"Конфигурационный файл не найден: {CONFIG_PATH}")
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+CONFIG = load_config()
 
 def get_api_key():
     if not SECRETS_PATH.exists(): return None
@@ -74,7 +83,7 @@ def digitize_invoice(image_file) -> list:
     """
     
     payload = {
-        "model": "google/gemini-2.5-flash",
+        "model": CONFIG['ai']['model_vision'],
         "messages": [
             {
                 "role": "user",
@@ -84,7 +93,7 @@ def digitize_invoice(image_file) -> list:
                 ]
             }
         ],
-        "temperature": 0.1
+        "temperature": CONFIG['ai']['temperature']
     }
     
     raw_text = call_openrouter(payload)
@@ -96,31 +105,35 @@ def digitize_invoice(image_file) -> list:
 def run_batch_forecast():
     if not get_api_key(): return "no_key"
 
-    with sqlite3.connect(DB_PATH) as conn:
-        active_items = pd.read_sql_query("""
+    db_path = BASE_DIR / CONFIG['paths']['data_dir'] / CONFIG['paths']['db_name']
+    with sqlite3.connect(db_path) as conn:
+        history_days = CONFIG['ai']['forecast_history_days']
+        items_limit = CONFIG['ai']['forecast_items_limit']
+        
+        active_items = pd.read_sql_query(f"""
             SELECT 
                 item_name, sku,
                 MAX(quantity) as peak_qty,
                 (SELECT quantity FROM stocks s2 WHERE s2.item_name = s.item_name ORDER BY report_timestamp DESC LIMIT 1) as current_qty,
                 (SELECT price FROM stocks s3 WHERE s3.item_name = s.item_name ORDER BY report_timestamp DESC LIMIT 1) as price
             FROM stocks s
-            WHERE report_timestamp >= date('now', '-30 days', 'localtime')
+            WHERE report_timestamp >= date('now', '-{history_days} days', 'localtime')
             GROUP BY item_name
             HAVING current_qty < peak_qty AND current_qty > 0
             ORDER BY (peak_qty - current_qty) DESC
-            LIMIT 30
+            LIMIT {items_limit}
         """, conn)
 
         if active_items.empty: return "empty"
 
-        batch_size = 10
+        batch_size = CONFIG['ai']['forecast_batch_size']
         success_count = 0
         
         for i in range(0, len(active_items), batch_size):
             batch = active_items.iloc[i:i+batch_size]
             items_data = []
             for _, row in batch.iterrows():
-                df_hist = pd.read_sql_query("SELECT SUBSTR(report_timestamp, 1, 10) as date, quantity FROM stocks WHERE item_name = ? AND report_timestamp >= date('now', '-30 days')", conn, params=(row['item_name'],))
+                df_hist = pd.read_sql_query(f"SELECT SUBSTR(report_timestamp, 1, 10) as date, quantity FROM stocks WHERE item_name = ? AND report_timestamp >= date('now', '-{history_days} days')", conn, params=(row['item_name'],))
                 sales = float(df_hist['quantity'].max() - df_hist['quantity'].min())
                 days_tracked = max(1, (pd.to_datetime(df_hist['date']).max() - pd.to_datetime(df_hist['date']).min()).days) if len(df_hist) > 1 else 1
                 items_data.append({"name": row['item_name'], "sku": row['sku'], "stock": int(row['current_qty']), "avg_sales": round(sales / days_tracked, 2)})
@@ -128,15 +141,15 @@ def run_batch_forecast():
             today_date = pd.Timestamp.now().strftime('%Y-%m-%d')
             prompt = f"Сегодня: {today_date}. ДАННЫЕ: {json.dumps(items_data, ensure_ascii=False)}. ПРАВИЛА: 1. 'days_to_zero' — через сколько дней кончится товар. 2. 'reason' — обоснование. ВЕРНИ JSON: [ {{\"item_name\": \"...\", \"sku\": \"...\", \"days_to_zero\": 10, \"recommended_qty\": 50, \"reason\": \"...\"}} ]"
             
-            payload = {"model": "google/gemini-2.5-flash", "messages": [{"role": "user", "content": prompt}], "temperature": 0.1}
+            payload = {"model": CONFIG['ai']['model_forecast'], "messages": [{"role": "user", "content": prompt}], "temperature": CONFIG['ai']['temperature']}
             
-            for attempt in range(3):
+            for attempt in range(CONFIG['crawler']['retry_count']):
                 try:
                     raw_text = call_openrouter(payload)
                     forecasts = json.loads(raw_text.replace("```json", "").replace("```", "").strip())
                     for f in forecasts:
                         avg_s = next((item['avg_sales'] for item in items_data if item['name'] == f['item_name']), 0)
-                        days = int(f.get('days_to_zero', 30))
+                        days = int(f.get('days_to_zero', CONFIG['ai']['forecast_history_days']))
                         calc_zero_date = (pd.Timestamp.now() + pd.Timedelta(days=days)).strftime('%Y-%m-%d')
                         existing = conn.execute("SELECT id FROM ai_forecasts WHERE item_name = ? AND date(created_at) = date('now', 'localtime')", (f['item_name'],)).fetchone()
                         if existing:
@@ -149,7 +162,7 @@ def run_batch_forecast():
                     time.sleep(2)
                     break
                 except Exception as e:
-                    if attempt == 2: return f"error_{str(e)}"
-                    time.sleep(2)
+                    if attempt == CONFIG['crawler']['retry_count'] - 1: return f"error_{str(e)}"
+                    time.sleep(CONFIG['crawler']['error_sleep'])
                     
-        return f"ok_{success_count}"
+    return f"ok_{success_count}"

@@ -1,0 +1,39 @@
+{
+  "site": {
+    "base_url": "https://example.com",
+    "start_path": "/katalog/",
+    "headers": {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+  },
+  "crawler": {
+    "sleep_min": 1.2,
+    "sleep_max": 3.5,
+    "max_errors": 10,
+    "timeout": 10,
+    "retry_count": 3,
+    "error_sleep": 5
+  },
+  "paths": {
+    "data_dir": "data",
+    "log_dir": "logs",
+    "db_name": "stock_history.sqlite",
+    "last_run_file": "logs/last_run.date",
+    "ai_pending_flag": "logs/ai_pending.flag"
+  },
+  "ai": {
+    "model_vision": "openai/gpt-4o",
+    "model_forecast": "openai/gpt-4o-mini",
+    "temperature": 0.1,
+    "forecast_history_days": 30,
+    "forecast_items_limit": 30,
+    "forecast_batch_size": 10
+  },
+  "scheduler": {
+    "work_on_weekends": false,
+    "internet_wait_timeout_mins": 20
+  },
+  "database": {
+    "history_depth_days": 365
+  }
+}

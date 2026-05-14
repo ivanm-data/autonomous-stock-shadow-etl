@@ -31,13 +31,13 @@ def show(df_inv, df_anomalies):
 
     # Выводим баннер для Аномалий, если они есть
     if active_anom > 0:
-        if st.button(f"🚨 НОВЫЕ СКАЧКИ ОСТАТКОВ ({active_anom})! Нажми для распределения", type="primary", use_container_width=True, key="banner_anom"):
+        if st.button(f"🚨 НОВЫЕ СКАЧКИ ОСТАТКОВ ({active_anom})! Нажми для распределения", type="primary", width="stretch", key="banner_anom"):
             st.session_state.current_page = "⚠️ Аномалии"
             st.rerun()
 
     # Выводим баннер для Задач, если они есть
     if active_tasks > 0:
-        if st.button(f"🔥 НЕЗАКРЫТЫЕ ЗАДАЧИ ({active_tasks})! Нажми для проверки на полке", type="primary", use_container_width=True, key="banner_tasks"):
+        if st.button(f"🔥 НЕЗАКРЫТЫЕ ЗАДАЧИ ({active_tasks})! Нажми для проверки на полке", type="primary", width="stretch", key="banner_tasks"):
             st.session_state.current_page = "🔥 Задачи"
             st.rerun()
 
@@ -136,7 +136,7 @@ def show(df_inv, df_anomalies):
                         st.session_state.manual_anomaly_id = None
                         st.rerun()
         else:
-            st.dataframe(f_df.drop(columns=['ID', 'Категория']), use_container_width=True, height=500, hide_index=True)
+            st.dataframe(f_df.drop(columns=['ID', 'Категория']), width="stretch", height=500, hide_index=True)
     else: 
         st.info("👆 Введите артикул или название для поиска. Ниже — статус системы.")
         st.write("---")
@@ -218,7 +218,7 @@ def show(df_inv, df_anomalies):
                     st.success("✅ Завершен успешно")
                     
                 # UX Улучшение: кнопка ручного обновления
-                if st.button("🔄 Обновить статус", use_container_width=True):
+                if st.button("🔄 Обновить статус", width="stretch"):
                     st.rerun()
 
             st.write("---")
@@ -237,7 +237,7 @@ def show(df_inv, df_anomalies):
             # Используем st.dataframe для скрытия индекса
             st.dataframe(
                 plot_df,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True, # Это уберет первую безымянную колонку
                 column_config={
                     "Дата": st.column_config.TextColumn("Дата"),
@@ -270,12 +270,12 @@ def show(df_inv, df_anomalies):
                             btn_col1, btn_col2 = c[3].columns(2)
                             
                             # КНОПКА 1: Легальная продажа (Убираем из списка без записи в аномалии)
-                            if btn_col1.button("🛒 Продан", key=f"lost_sold_{row['ID']}", help="Товара реально больше нет на полке", use_container_width=True):
+                            if btn_col1.button("🛒 Продан", key=f"lost_sold_{row['ID']}", help="Товара реально больше нет на полке", width="stretch"):
                                 st.session_state.dismissed_names.append(row['Наименование'])
                                 st.rerun()
                                 
                             # КНОПКА 2: Ошибка витрины (Баг - пишем в KPI)
-                            if btn_col2.button("🚨 Баг 1С", key=f"lost_bug_{row['ID']}", help="Товар лежит на полке, но сайт его скрыл!", type="primary", use_container_width=True):
+                            if btn_col2.button("🚨 Баг 1С", key=f"lost_bug_{row['ID']}", help="Товар лежит на полке, но сайт его скрыл!", type="primary", width="stretch"):
                                 db.save_anomaly_to_db({
                                     "item_name": row['Наименование'],
                                     "anomaly_type": "Скрыт с витрины (Баг)",

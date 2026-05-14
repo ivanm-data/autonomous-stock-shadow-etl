@@ -10,7 +10,7 @@ def show():
         target_name = st.session_state.selected_item_name
         target_sku = st.session_state.get('selected_item_sku', '')
 
-        if st.button("🔙 Вернуться на склад", use_container_width=False):
+        if st.button("🔙 Вернуться на склад", width="content"):
             st.session_state.current_page = "📦 Склад"
             st.rerun()
 
@@ -66,6 +66,6 @@ def show():
 
                 st.dataframe(
                     display_df,
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True
                 )

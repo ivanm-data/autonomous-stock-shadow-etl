@@ -37,4 +37,4 @@ crawler_state.json
 _workspace
 
 # Конфигурация с секретами
-config.json
+/config.json

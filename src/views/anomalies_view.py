@@ -118,12 +118,12 @@ def show(df_anomalies, df_inv):
                         
                         # Наша кнопка вызова меню склейки
                         if label == "🔄 Обновление карточки":
-                            if btn_cols[i].button(label, key=f"anom_{idx}_{key_suffix}", use_container_width=True):
+                            if btn_cols[i].button(label, key=f"anom_{idx}_{key_suffix}", width="stretch"):
                                 st.session_state.link_target_idx = idx
                                 st.rerun()
                         else:
                             # Логика для всех остальных обычных кнопок
-                            if btn_cols[i].button(label, key=f"anom_{idx}_{key_suffix}", use_container_width=True):
+                            if btn_cols[i].button(label, key=f"anom_{idx}_{key_suffix}", width="stretch"):
                                 price = df_inv[df_inv['Наименование'] == row['Наименование']]['Цена'].values[0] if not df_inv.empty else 0
                                 final_status = "Закрыта" if label in ["Системная ошибка", "📦 Плановый приход", "⏳ Догруз с сайта"] else "Открыта"
                                 

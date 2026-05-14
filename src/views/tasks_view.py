@@ -39,7 +39,7 @@ def show():
                                            key=f"note_{row['id']}")
 
                 bc1, bc2 = st.columns(2)
-                if bc1.button("✅ Вопрос решен", key=f"close_{row['id']}", type="primary", use_container_width=True):
+                if bc1.button("✅ Вопрос решен", key=f"close_{row['id']}", type="primary", width="stretch"):
 
                     # Если это вина сайта, принудительно меняем тип аномалии
                     # Это исключит задачу из расчета MTTR
@@ -51,6 +51,6 @@ def show():
                     db.close_anomaly_in_db(row['id'], final_note)
                     st.rerun()
 
-                if bc2.button("🗑️ Отменить запись", key=f"cancel_{row['id']}", use_container_width=True):
+                if bc2.button("🗑️ Отменить запись", key=f"cancel_{row['id']}", width="stretch"):
                     db.cancel_anomaly_in_db(row['id'], final_note)
                     st.rerun()

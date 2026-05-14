@@ -26,7 +26,7 @@ def show():
                 data=csv,
                 file_name='dead_stock_report.csv',
                 mime='text/csv',
-                use_container_width=True
+                width="stretch"
             )
             
         with c2:
@@ -42,7 +42,7 @@ def show():
         st.write("**Детализация по товарам (Топ проблемных позиций):**")
         
         # Выводим таблицу, отсортированную от самых дорогих потерь к самым дешевым
-        st.dataframe(only_dead.sort_values('Потери', ascending=False), use_container_width=True, column_config={
+        st.dataframe(only_dead.sort_values('Потери', ascending=False), width="stretch", column_config={
             "Потери": st.column_config.NumberColumn(format="%d ₽"),
             "Дней без движения": st.column_config.ProgressColumn(format="%d дн.", min_value=0, max_value=365)
         })

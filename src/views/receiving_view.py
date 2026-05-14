@@ -14,7 +14,7 @@ def show():
     if file_photo:
         st.image(file_photo, caption="📸 Фото загружено", width=400)
         
-        if st.button("🚀 Отправить на оцифровку", type="primary", use_container_width=True):
+        if st.button("🚀 Отправить на оцифровку", type="primary", width="stretch"):
             with st.spinner("🧠 Нейросеть Gemini читает таблицу..."):
                 try:
                     items_list = ai_services.digitize_invoice(file_photo)
@@ -32,7 +32,7 @@ def show():
             st.write("**Результат оцифровки:**")
             df_result = pd.DataFrame(st.session_state.temp_invoice)
             
-            st.dataframe(df_result, use_container_width=True, hide_index=True)
+            st.dataframe(df_result, width="stretch", hide_index=True)
             
             if st.button("💾 Подтвердить и сохранить в Ожидаемые приходы", type="primary"):
                 with db.get_connection() as conn:

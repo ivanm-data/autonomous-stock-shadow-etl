@@ -213,11 +213,11 @@ with st.sidebar:
         st.caption("📂 Статистика базы")
         st.info(f"Дней в базе: {db_stats['days_count']}")
     
-    if st.button("🔄 Обновить данные", use_container_width=True):
+    if st.button("🔄 Обновить данные", width="stretch"):
         st.cache_data.clear()
         st.rerun()
         
-    if st.button("🗑️ Очистить легализованные", use_container_width=True, help="Вернуть все скрытые аномалии обратно в список ⚠️"):
+    if st.button("🗑️ Очистить легализованные", width="stretch", help="Вернуть все скрытые аномалии обратно в список ⚠️"):
         st.session_state.dismissed_names = []
         st.rerun()
 

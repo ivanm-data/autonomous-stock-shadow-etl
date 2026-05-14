@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 from pathlib import Path
-from app import verify_shadow_forecasts
 import db
 import ai_services
 
@@ -74,7 +73,7 @@ def show():
         # Отрисовываем таблицу, убрав сырые технические колонки с нулями
         st.dataframe(
             display_df.drop(columns=['lost_sales_value', 'overstock_value']), 
-            use_container_width=True, 
+            width="stretch", 
             hide_index=True
         )
 
@@ -100,7 +99,7 @@ def show():
         btn_type = "primary"
 
     # 3. Кнопка запуска (Всегда активна, чтобы пользователь мог сам проверить связь)
-    if st.button(btn_text, type=btn_type, use_container_width=True):
+    if st.button(btn_text, type=btn_type, width="stretch"):
         with st.spinner("🤖 ИИ анализирует графики продаж..."):
             try:
                 status = ai_services.run_batch_forecast()

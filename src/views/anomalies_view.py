@@ -1,54 +1,68 @@
 import streamlit as st
 import pandas as pd
 import re
+import difflib
 import db
 
 COL_RATIOS = [2, 4, 1, 1, 1, 2]
 HEADERS_ANOMALIES = ["Артикул", "Наименование", "Было", "Стало", "Δ", "Действие"]
 
+def find_best_invoice_match(anomaly_name, expected_df):
+    if expected_df.empty:
+        return None, 0.0
+    best_row = None
+    max_ratio = 0.0
+    for _, exp_row in expected_df.iterrows():
+        ratio = difflib.SequenceMatcher(None, str(anomaly_name).lower(), str(exp_row['item_name']).lower()).ratio()
+        if ratio > max_ratio:
+            max_ratio = ratio
+            best_row = exp_row
+    return best_row, max_ratio
+
 def show(df_anomalies, df_inv):
+    # Загружаем список ожидаемых товаров на самом верху для глобального доступа
+    with db.get_connection() as conn:
+        expected_deliveries_df = pd.read_sql_query("SELECT * FROM expected_deliveries WHERE status = 'Ожидает'", conn)
+
     active_anom = df_anomalies[~df_anomalies['Наименование'].isin(st.session_state.dismissed_names)] if not df_anomalies.empty else pd.DataFrame()
 
     if not active_anom.empty:
         # Берем только приходы (Дельта > 0)
         arrivals = active_anom[active_anom['Дельта'] > 0]
         
-        if not arrivals.empty:
+        # --- СТРОГИЙ АВТО-МАТЧИНГ (100% СОВПАДЕНИЕ) ИЗ ОРИГИНАЛЬНОГО ФАЙЛА ---
+        if not arrivals.empty and not expected_deliveries_df.empty:
             with db.get_connection() as conn:
-                # Загружаем ожидаемые приходы
-                expected = pd.read_sql_query("SELECT * FROM expected_deliveries WHERE status = 'Ожидает'", conn)
-                
-                if not expected.empty:
-                    for idx, anom_row in arrivals.iterrows():
-                        # Ищем совпадение по имени ИЛИ артикулу И количеству
-                        match = expected[
-                            ((expected['item_name'] == anom_row['Наименование']) | (expected['sku'] == anom_row['Артикул'])) & 
-                            (expected['qty_expected'] == anom_row['Дельта'])
-                        ]
+                for idx, anom_row in arrivals.iterrows():
+                    # Ищем совпадение по имени ИЛИ артикулу И количеству СТРОГО 1 в 1
+                    match = expected_deliveries_df[
+                        ((expected_deliveries_df['item_name'] == anom_row['Наименование']) | (expected_deliveries_df['sku'] == anom_row['Артикул'])) & 
+                        (expected_deliveries_df['qty_expected'] == anom_row['Дельта'])
+                    ]
+                    
+                    if not match.empty:
+                        match_id = match.iloc[0]['id']
                         
-                        if not match.empty:
-                            match_id = match.iloc[0]['id']
-                            
-                            # Нашли! Сами легализуем аномалию
-                            db.save_anomaly_to_db({
-                                "item_name": anom_row['Наименование'],
-                                "anomaly_type": "📦 Плановый приход",
-                                "qty_system": anom_row['Стало'],
-                                "qty_physical": anom_row['Было'], 
-                                "financial_impact": 0,
-                                "source": "Автоматически (Нейро-приемка)",
-                                "status": "Закрыта", 
-                                "comment": f"Авто-матчинг с накладной #{match_id}"
-                            })
-                            
-                            # Помечаем в буфере, что этот товар принят
-                            conn.execute("UPDATE expected_deliveries SET status = 'Принято' WHERE id = ?", (int(match_id),))
-                            conn.commit()
-                            
-                            # Скрываем с экрана
-                            st.session_state.dismissed_names.append(anom_row['Наименование'])
-                            st.toast(f"🤖 Авто-приемка: {anom_row['Наименование']}")
-                            st.rerun()
+                        # Нашли! Сами легализуем аномалию
+                        db.save_anomaly_to_db({
+                            "item_name": anom_row['Наименование'],
+                            "anomaly_type": "📦 Плановый приход",
+                            "qty_system": anom_row['Стало'],
+                            "qty_physical": anom_row['Было'], 
+                            "financial_impact": 0,
+                            "source": "Автоматически (Нейро-приемка)",
+                            "status": "Закрыта", 
+                            "comment": f"Авто-матчинг с накладной #{match_id}"
+                        })
+                        
+                        # Помечаем в буфере, что этот товар принят
+                        conn.execute("UPDATE expected_deliveries SET status = 'Принято' WHERE id = ?", (int(match_id),))
+                        conn.commit()
+                        
+                        # Скрываем с экрана
+                        st.session_state.dismissed_names.append(anom_row['Наименование'])
+                        st.toast(f"🤖 Авто-приемка: {anom_row['Наименование']}")
+                        st.rerun()
 
     if active_anom.empty: 
         st.success("Аномалий нет.")
@@ -101,28 +115,49 @@ def show(df_anomalies, df_inv):
                 c[3].write(row['Стало'])
                 c[4].write(f":green[+{row['Дельта']}]")
 
+                # --- УМНОЕ ИИ-СОПОСТАВЛЕНИЕ (FUZZY MATCH) В ИНТЕРФЕЙСЕ ---
+                best_match, ratio = find_best_invoice_match(row['Наименование'], expected_deliveries_df)
+                if best_match is not None and ratio > 0.85:
+                    if ratio >= 0.7:
+                        st.success(f"💡 Найдено сходство в оцифрованной накладной ({ratio:.0%}): **{best_match['item_name']}** ({best_match['qty_expected']} шт.)")
+                    else:
+                        st.info(f"💡 Найдено сходство в оцифрованной накладной ({ratio:.0%}): **{best_match['item_name']}** ({best_match['qty_expected']} шт.)")
+                    
+                    if st.button("🔗 Принять по накладной (Склеить)", key=f"fuzzy_link_{idx}", type="primary", width="stretch"):
+                        db.save_anomaly_to_db({
+                            "item_name": row['Наименование'],
+                            "anomaly_type": "📦 Плановый приход",
+                            "qty_system": row['Стало'],
+                            "qty_physical": row['Было'], 
+                            "financial_impact": 0,
+                            "source": "Вручную (Умная склейка накладной)",
+                            "status": "Закрыта", 
+                            "comment": f"Ручная привязка к оцифрованной строке: {best_match['item_name']} (id #{best_match['id']})"
+                        })
+                        with db.get_connection() as conn:
+                            conn.execute("UPDATE expected_deliveries SET status = 'Принято' WHERE id = ?", (int(best_match['id']),))
+                            conn.commit()
+
+                        st.session_state.dismissed_names.append(row['Наименование'])
+                        st.toast("🎉 Аномалия закрыта, позиция удалена из накладной!")
+                        st.rerun()
+
                 # Умная группировка кнопок (Сетка 3x3 вместо одной длинной строки)
-                # Ряд 1: Негативные инциденты (Потери и сбои)
                 row1 = [("Утеря", "минус"), ("Тихая отмена", "отмена"), ("Системная ошибка", "sys_err")]
-                # Ряд 2: Пересорты и излишки (Смещение остатков)
                 row2 = [("Пересорт (Склад)", "склад"), ("Пересорт (1С)", "офис"), ("Излишек", "плюс")]
-                # Ряд 3: Рутина и автоматизация (Системные корректировки)
                 row3 = [("📦 Плановый приход", "delivery"), ("⏳ Догруз с сайта", "late_sync"), ("🔄 Обновление карточки", "card_update")]
                 
                 grid = [row1, row2, row3]
 
-                # Отрисовываем сетку
                 for button_row in grid:
                     btn_cols = st.columns(len(button_row))
                     for i, (label, key_suffix) in enumerate(button_row):
                         
-                        # Наша кнопка вызова меню склейки
                         if label == "🔄 Обновление карточки":
                             if btn_cols[i].button(label, key=f"anom_{idx}_{key_suffix}", width="stretch"):
                                 st.session_state.link_target_idx = idx
                                 st.rerun()
                         else:
-                            # Логика для всех остальных обычных кнопок
                             if btn_cols[i].button(label, key=f"anom_{idx}_{key_suffix}", width="stretch"):
                                 price = df_inv[df_inv['Наименование'] == row['Наименование']]['Цена'].values[0] if not df_inv.empty else 0
                                 final_status = "Закрыта" if label in ["Системная ошибка", "📦 Плановый приход", "⏳ Догруз с сайта"] else "Открыта"
@@ -146,11 +181,9 @@ def show(df_anomalies, df_inv):
                                 st.success(f"Зафиксировано: {label}")
                                 st.rerun()
 
-                # --- МЕНЮ СКЛЕЙКИ ИСТОРИИ (КАК НА СКЛАДЕ) ---
                 if st.session_state.get('link_target_idx') == idx:
                     st.write("---")
                     
-                    # Верхний ряд с кнопками пропуска и отмены (чтобы всегда были под рукой)
                     col_top1, col_top2 = st.columns([3, 1])
                     if col_top1.button("⏭️ Просто обновить карточку (БЕЗ склейки с историей)", key=f"skip_link_{idx}"):
                         db.save_anomaly_to_db({
@@ -171,18 +204,15 @@ def show(df_anomalies, df_inv):
                         st.session_state.link_target_idx = None
                         st.rerun()
 
-                    st.write("") # Небольшой отступ
+                    st.write("")
 
-                    # 1. Поле ручного поиска (один в один как на складе)
                     search_query = st.text_input("🔍 Поиск старой карточки для привязки:", 
                                                 placeholder="Артикул или название...",
                                                 key=f"search_link_{idx}")
 
                     matched_df = pd.DataFrame()
                     
-                    # 2. Движок поиска от вкладки Склад
                     if search_query:
-                        # Убиваем мусорные значки
                         clean_query = re.sub(r'\(снят с сайта.*?\)', '', search_query, flags=re.IGNORECASE)
                         clean_query = clean_query.replace('🔘', '').replace('❌', '').strip()
                         query_words = clean_query.lower().replace('ё', 'е').split()
@@ -193,11 +223,9 @@ def show(df_anomalies, df_inv):
                                 mask &= df_inv['_search_index'].str.contains(word, regex=False)
                             
                             matched_df = df_inv[mask].copy()
-                            # ПРИОРИТЕТ: Сортируем так, чтобы неактивные (снятые с сайта) были на самом верху
                             matched_df = matched_df.sort_values(by='actual', ascending=True).head(30)
                             st.caption(f"🔍 Найдено: {len(df_inv[mask])}. Показаны первые 30.")
                     else:
-                        # Если ничего не введено, показываем кандидатов, пропавших с сайта
                         today_lost = df_anomalies[
                             (df_anomalies['Дельта'] < 0) & 
                             (~df_anomalies['Наименование'].isin(st.session_state.dismissed_names))
@@ -208,7 +236,6 @@ def show(df_anomalies, df_inv):
                         matched_df = df_inv[mask1 | mask2].sort_values(by='actual', ascending=True).head(10).copy()
                         st.caption("Показаны недавно пропавшие товары. Используйте поиск, чтобы найти другие.")
 
-                    # 3. ОТРИСОВКА РЕЗУЛЬТАТОВ КАК НА СКЛАДЕ (Таблица вместо списка)
                     if not matched_df.empty:
                         hc = st.columns([2, 4, 2, 2])
                         for i, h in enumerate(["Артикул", "Наименование", "Статус", "Действие"]): 
@@ -227,7 +254,6 @@ def show(df_anomalies, df_inv):
                                 c[1].write(display_name)
                                 c[2].write("✅ Активен")
                                 
-                            # Кнопка склейки прямо в строке товара!
                             if c[3].button("🔗 Склеить", key=f"do_link_{idx}_{matched_idx}", type="primary"):
                                 old_name = m_row['Наименование']
                                 with db.get_connection() as conn:

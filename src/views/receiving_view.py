@@ -24,7 +24,7 @@ def show():
                     
                 except Exception as e:
                     st.error(f"❌ Ошибка распознавания: {e}")
-            
+        
     
         # Блок сохранения результата
         if 'temp_invoice' in st.session_state:
@@ -51,7 +51,17 @@ def show():
                 del st.session_state.temp_invoice
                 st.success("🎉 Данные успешно добавлены в список ожидания!")
                 st.rerun()
-            
+        
+        st.write("---")
+        col1, col2 = st.columns([3, 1])
+        with col2:
+            if st.button("🗑️ Очистить весь список", width="stretch"):
+                with db.get_connection() as conn:
+                    conn.execute("DELETE FROM expected_deliveries WHERE status = 'Ожидает'")
+                    conn.commit()
+                st.toast("✅ Список ожидаемых товаров полностью очищен!")
+                st.rerun()
+    
     st.divider()
     st.subheader("📋 Список ожидаемых товаров")
     st.caption("Эти позиции были оцифрованы и ждут появления на сайте для авто-легализации аномалий.")
@@ -62,7 +72,7 @@ def show():
             "SELECT id, created_at, sku, item_name, qty_expected FROM expected_deliveries WHERE status = 'Ожидает' ORDER BY created_at DESC", 
             conn
         )
-        
+    
     if expected_df.empty:
         st.info("В листе ожидания пока ничего нет.")
     else:

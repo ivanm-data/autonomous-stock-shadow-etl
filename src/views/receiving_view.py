@@ -53,16 +53,17 @@ def show():
                 st.rerun()
         
         st.write("---")
-        col1, col2 = st.columns([3, 1])
-        with col2:
-            if st.button("🗑️ Очистить весь список", width="stretch"):
-                with db.get_connection() as conn:
-                    conn.execute("DELETE FROM expected_deliveries WHERE status = 'Ожидает'")
-                    conn.commit()
-                st.toast("✅ Список ожидаемых товаров полностью очищен!")
-                st.rerun()
     
     st.divider()
+    
+    # Кнопка очистки списка ожидаемых товаров - строго над заголовком
+    if st.button("🗑️ Очистить весь список", width="stretch"):
+        with db.get_connection() as conn:
+            conn.execute("DELETE FROM expected_deliveries WHERE status = 'Ожидает'")
+            conn.commit()
+        st.toast("✅ Список ожидаемых товаров полностью очищен!")
+        st.rerun()
+    
     st.subheader("📋 Список ожидаемых товаров")
     st.caption("Эти позиции были оцифрованы и ждут появления на сайте для авто-легализации аномалий.")
     

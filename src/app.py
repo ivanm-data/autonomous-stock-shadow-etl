@@ -211,41 +211,48 @@ except Exception:
 
 with st.sidebar:
     st.title("💎 Autonomous Stock Shadow")
-    
-    # --- ФУНКЦИЯ ПЕРЕКЛЮЧЕНИЯ (ЗАЩИТА ОТ ЗАЦИКЛИВАНИЯ) ---
-    def nav_changed(menu_name):
-        if menu_name == "op" and st.session_state.get("op_nav"):
-            # Обновляем текущую страницу
-            st.session_state.current_page = st.session_state.op_nav.split(' (')[0]
-            # Явно приказываем второму меню сбросить выделение
-            if "ana_nav" in st.session_state:
-                st.session_state.ana_nav = None
-                
-        elif menu_name == "ana" and st.session_state.get("ana_nav"):
-            # Обновляем текущую страницу
-            st.session_state.current_page = st.session_state.ana_nav.split(' (')[0]
-            # Явно приказываем первому меню сбросить выделение
-            if "op_nav" in st.session_state:
-                st.session_state.op_nav = None
 
     # --- ОПРЕДЕЛЯЕМ ТЕКУЩУЮ СТРАНИЦУ ---
     base_page = st.session_state.current_page.split(' (')[0]
 
+    # --- СИНХРОНИЗИРУЕМ ВИДЖЕТЫ С ТЕКУЩЕЙ СТРАНИЦЕЙ ДО РЕНДЕРА ---
+    # Это критично: если страница была изменена программно (кнопки-баннеры),
+    # нужно явно сбросить session_state виджетов, чтобы index сработал правильно
+    op_options = ["📦 Склад", f"⚠️ Аномалии ({active_anom_count})", f"🔥 Задачи ({open_tasks_count})", "📥 Приемка"]
+    ana_options = ["🎯 Эффективность", "❄️ Неликвиды", "📈 Оборачиваемость", "⚖️ A/B Тест: AI vs Человек"]
+
+    op_match = next((opt for opt in op_options if opt.startswith(base_page)), None)
+    ana_match = next((opt for opt in ana_options if opt.startswith(base_page)), None)
+
+    if op_match:
+        st.session_state["op_nav"] = op_match
+        st.session_state.pop("ana_nav", None)
+    elif ana_match:
+        st.session_state["ana_nav"] = ana_match
+        st.session_state.pop("op_nav", None)
+
     # --- ЛОГИЧЕСКОЕ РАЗДЕЛЕНИЕ МЕНЮ: ОПЕРАЦИИ ---
     st.caption("🛠 ОПЕРАЦИИ")
-    op_options = ["📦 Склад", f"⚠️ Аномалии ({active_anom_count})", f"🔥 Задачи ({open_tasks_count})", "📥 Приемка"]
-    
-    op_idx = next((i for i, opt in enumerate(op_options) if opt.startswith(base_page)), None)
-    st.radio("Рабочая область", op_options, index=op_idx, key="op_nav", on_change=nav_changed, args=("op",))
-    
+    op_idx = next((i for i, opt in enumerate(op_options) if opt.startswith(base_page)), 0)
+    op_sel = st.radio("Рабочая область", op_options, index=op_idx, key="op_nav")
+
     st.write("---")
-    
+
     # --- ЛОГИЧЕСКОЕ РАЗДЕЛЕНИЕ МЕНЮ: АНАЛИТИКА ---
     st.caption("📊 АНАЛИТИКА И KPI")
-    ana_options = ["🎯 Эффективность", "❄️ Неликвиды", "📈 Оборачиваемость", "⚖️ A/B Тест: AI vs Человек"]
-    
     ana_idx = next((i for i, opt in enumerate(ana_options) if opt.startswith(base_page)), None)
-    st.radio("Инструменты анализа", ana_options, index=ana_idx, key="ana_nav", on_change=nav_changed, args=("ana",))
+    ana_sel = st.radio("Инструменты анализа", ana_options, index=ana_idx, key="ana_nav")
+
+    # --- РЕАГИРУЕМ НА РУЧНОЙ ВЫБОР В МЕНЮ ---
+    op_base = op_sel.split(' (')[0] if op_sel else None
+    ana_base = ana_sel.split(' (')[0] if ana_sel else None
+
+    if ana_base and ana_base != base_page:
+        st.session_state.current_page = ana_base
+        st.rerun()
+    elif op_base and op_base != base_page:
+        st.session_state.current_page = op_base
+        st.rerun()
 
     # --- СИСТЕМНЫЕ КНОПКИ ---
     st.write("---")

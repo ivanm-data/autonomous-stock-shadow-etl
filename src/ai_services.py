@@ -136,10 +136,48 @@ def run_batch_forecast():
                 df_hist = pd.read_sql_query(f"SELECT SUBSTR(report_timestamp, 1, 10) as date, quantity FROM stocks WHERE item_name = ? AND report_timestamp >= date('now', '-{history_days} days')", conn, params=(row['item_name'],))
                 sales = float(df_hist['quantity'].max() - df_hist['quantity'].min())
                 days_tracked = max(1, (pd.to_datetime(df_hist['date']).max() - pd.to_datetime(df_hist['date']).min()).days) if len(df_hist) > 1 else 1
-                items_data.append({"name": row['item_name'], "sku": row['sku'], "stock": int(row['current_qty']), "avg_sales": round(sales / days_tracked, 2)})
+                avg_sales = round(sales / days_tracked, 2)
+                
+                # --- МАТЕМАТИЧЕСКИЙ РАСЧЁТ ПРОГНОЗА ---
+                current_qty = int(row['current_qty'])
+                lead_time = CONFIG['ai']['lead_time_days']
+                z = CONFIG['ai']['safety_stock_multiplier']
+                
+                # Расчёт std_dev по историческим остаткам
+                std_dev = float(df_hist['quantity'].std()) if len(df_hist) > 1 else 0.0
+                
+                # Fallback: если данных мало, используем 20% от среднего расхода
+                if len(df_hist) < 3 or std_dev == 0:
+                    safety_stock = int(avg_sales * 0.2)
+                else:
+                    # Страховой запас: z × σ × sqrt(lead_time)
+                    safety_stock = int(z * std_dev * (lead_time ** 0.5))
+                
+                # Базовый спрос за период поставки
+                base_demand = current_qty + int(avg_sales * lead_time)
+                
+                # Итоговый заказ
+                recommended_qty = base_demand + safety_stock
+                
+                # Дни до нуля (математически, без LLM)
+                days_to_zero = round(current_qty / avg_sales, 1) if avg_sales > 0 else 999.0
+                
+                items_data.append({
+                    "name": row['item_name'],
+                    "sku": row['sku'],
+                    "stock": current_qty,
+                    "avg_sales": avg_sales,
+                    "lead_time": lead_time,
+                    "safety_stock": safety_stock,
+                    "recommended_qty": recommended_qty,
+                    "days_to_zero": days_to_zero
+                })
 
             today_date = pd.Timestamp.now().strftime('%Y-%m-%d')
-            prompt = f"Сегодня: {today_date}. ДАННЫЕ: {json.dumps(items_data, ensure_ascii=False)}. ПРАВИЛА: 1. 'days_to_zero' — через сколько дней кончится товар. 2. 'reason' — обоснование. ВЕРНИ JSON: [ {{\"item_name\": \"...\", \"sku\": \"...\", \"days_to_zero\": 10, \"recommended_qty\": 50, \"reason\": \"...\"}} ]"
+            # LLM теперь только для генерации обоснования (reason)
+            prompt = f"Сегодня: {today_date}. ДАННЫЕ: {json.dumps(items_data, ensure_ascii=False)}. " \
+                     f"ПРАВИЛА: 1. 'reason' — краткое обоснование прогноза на основе математических расчётов. " \
+                     f"ВЕРНИ JSON: [ {{\"item_name\": \"...\", \"sku\": \"...\", \"reason\": \"...\"}} ]"
             
             payload = {"model": CONFIG['ai']['model_forecast'], "messages": [{"role": "user", "content": prompt}], "temperature": CONFIG['ai']['temperature']}
             
@@ -147,22 +185,49 @@ def run_batch_forecast():
                 try:
                     raw_text = call_openrouter(payload)
                     forecasts = json.loads(raw_text.replace("```json", "").replace("```", "").strip())
-                    for f in forecasts:
-                        avg_s = next((item['avg_sales'] for item in items_data if item['name'] == f['item_name']), 0)
-                        days = int(f.get('days_to_zero', CONFIG['ai']['forecast_history_days']))
-                        calc_zero_date = (pd.Timestamp.now() + pd.Timedelta(days=days)).strftime('%Y-%m-%d')
-                        existing = conn.execute("SELECT id FROM ai_forecasts WHERE item_name = ? AND date(created_at) = date('now', 'localtime')", (f['item_name'],)).fetchone()
-                        if existing:
-                            conn.execute("UPDATE ai_forecasts SET predicted_zero_date = ?, recommended_qty = ?, reason = ?, avg_daily_sales = ?, status = '⏳ Наблюдение' WHERE id = ?", (calc_zero_date, f['recommended_qty'], f['reason'], avg_s, existing[0]))
-                        else:
-                            conn.execute("UPDATE ai_forecasts SET status = '🔄 Пересчитан ИИ' WHERE item_name = ? AND status = '⏳ Наблюдение'", (f['item_name'],))
-                            conn.execute("INSERT INTO ai_forecasts (item_name, sku, predicted_zero_date, recommended_qty, reason, avg_daily_sales) VALUES (?, ?, ?, ?, ?, ?)", (f['item_name'], f['sku'], calc_zero_date, f['recommended_qty'], f['reason'], avg_s))
-                    conn.commit()
-                    success_count += len(forecasts)
-                    time.sleep(2)
-                    break
                 except Exception as e:
-                    if attempt == CONFIG['crawler']['retry_count'] - 1: return f"error_{str(e)}"
-                    time.sleep(CONFIG['crawler']['error_sleep'])
+                    # Fallback: генерируем reason шаблонно, если LLM не отвечает
+                    forecasts = []
+                    for item in items_data:
+                        reason = f"Расчёт: {item['stock']} / {item['avg_sales']:.2f} = {item['days_to_zero']:.1f} дней. " \
+                                 f"Заказ: {item['stock']} + {int(item['avg_sales'] * item['lead_time'])} + {item['safety_stock']} шт."
+                        forecasts.append({
+                            "item_name": item['name'],
+                            "sku": item['sku'],
+                            "reason": reason
+                        })
+                
+                for f in forecasts:
+                    item_data = next((item for item in items_data if item['name'] == f['item_name']), None)
+                    if not item_data: continue
                     
+                    avg_s = item_data['avg_sales']
+                    days_to_zero = item_data['days_to_zero']
+                    calc_zero_date = (pd.Timestamp.now() + pd.Timedelta(days=int(days_to_zero))).strftime('%Y-%m-%d')
+                    
+                    existing = conn.execute("SELECT id FROM ai_forecasts WHERE item_name = ? AND date(created_at) = date('now', 'localtime')", (f['item_name'],)).fetchone()
+                    if existing:
+                        conn.execute("""
+                            UPDATE ai_forecasts 
+                            SET predicted_zero_date = ?, recommended_qty = ?, reason = ?, avg_daily_sales = ?, 
+                                lead_time_days = ?, safety_stock = ?, base_demand = ?, status = '⏳ Наблюдение' 
+                            WHERE id = ?
+                        """, (calc_zero_date, item_data['recommended_qty'], f['reason'], avg_s, 
+                              item_data['lead_time'], item_data['safety_stock'], 
+                              item_data['recommended_qty'] - item_data['safety_stock'], existing[0]))
+                    else:
+                        conn.execute("UPDATE ai_forecasts SET status = '🔄 Пересчитан ИИ' WHERE item_name = ? AND status = '⏳ Наблюдение'", (f['item_name'],))
+                        conn.execute("""
+                            INSERT INTO ai_forecasts 
+                            (item_name, sku, predicted_zero_date, recommended_qty, reason, avg_daily_sales, 
+                             lead_time_days, safety_stock, base_demand) 
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (f['item_name'], f['sku'], calc_zero_date, item_data['recommended_qty'], 
+                              f['reason'], avg_s, item_data['lead_time'], item_data['safety_stock'], 
+                              item_data['recommended_qty'] - item_data['safety_stock']))
+                conn.commit()
+                success_count += len(forecasts)
+                time.sleep(2)
+                break
+                
     return f"ok_{success_count}"

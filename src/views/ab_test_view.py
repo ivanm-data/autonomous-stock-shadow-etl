@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 import db
 import ai_services
+from app import verify_shadow_forecasts
 
 
 def show():
@@ -48,8 +49,12 @@ def show():
         st.write("---")
         st.write("**Детализация (Журнал прогнозов и финансовых последствий):**")
         
-        # Берем нужные колонки (добавлен current_qty)
-        display_df = df_forecasts[['created_at', 'item_name', 'current_qty', 'predicted_zero_date', 'recommended_qty', 'reason', 'status', 'lost_sales_value', 'overstock_value']].copy()
+        # Берем нужные колонки (добавлены новые поля: lead_time_days, safety_stock, base_demand)
+        display_df = df_forecasts[
+            ['created_at', 'item_name', 'current_qty', 'predicted_zero_date', 'recommended_qty',
+             'avg_daily_sales', 'lead_time_days', 'safety_stock', 'reason', 'status',
+             'lost_sales_value', 'overstock_value']
+        ].copy()
         
         # Делаем остаток красивым целым числом
         display_df['current_qty'] = display_df['current_qty'].fillna(0).astype(int)
@@ -60,10 +65,13 @@ def show():
         display_df.rename(columns={
             'created_at': 'Дата прогноза',
             'item_name': 'Товар',
-            'current_qty': 'Остаток (шт)',  # <--- ВОТ ЭТА НОВАЯ СТРОЧКА
-            'predicted_zero_date': 'ИИ: Обнулится',
-            'recommended_qty': 'ИИ: Заказать (шт)',
-            'reason': 'Обоснование',
+            'current_qty': 'Остаток (шт)',
+            'predicted_zero_date': 'Мат. прогноз: Обнулится',
+            'recommended_qty': 'Итоговый заказ (шт)',
+            'avg_daily_sales': 'Средний расход (шт/день)',
+            'lead_time_days': 'Срок поставки (дни)',
+            'safety_stock': 'Страховой запас (шт)',
+            'reason': 'Обоснование (ИИ)',
             'status': 'Статус / Результат'
         }, inplace=True)
         
@@ -72,8 +80,8 @@ def show():
         
         # Отрисовываем таблицу, убрав сырые технические колонки с нулями
         st.dataframe(
-            display_df.drop(columns=['lost_sales_value', 'overstock_value']), 
-            width="stretch", 
+            display_df.drop(columns=['lost_sales_value', 'overstock_value']),
+            width="stretch",
             hide_index=True
         )
 

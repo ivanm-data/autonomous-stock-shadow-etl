@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 from pathlib import Path
 import sqlite3
+import json
 import db
 import ai_services
 from views import dead_stock_view, efficiency_view, anomalies_view, velocity_view, tasks_view, receiving_view, ab_test_view, stock_view
@@ -12,6 +13,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from queries import get_anomalies_query, get_insert_anomaly_query, get_close_anomaly_query, get_cancel_anomaly_query, get_sla_metrics_query
 
 import math
+
+# --- ЗАГРУЗКА КОНФИГУРАЦИИ ---
+BASE_DIR = Path(__file__).resolve().parent.parent
+CONFIG_PATH = BASE_DIR / "config.json"
+
+def load_config() -> dict:
+    """Загружает конфигурацию из config.json"""
+    if not CONFIG_PATH.exists():
+        raise FileNotFoundError(f"Конфигурационный файл не найден: {CONFIG_PATH}")
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+CONFIG = load_config()
 
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
@@ -70,9 +84,31 @@ def verify_shadow_forecasts():
             price = float(match.iloc[0]['Цена'])
             avg_sales = float(row['avg_daily_sales'])
             
+            # --- ПРОВЕРКА НА НУЖНОСТЬ ПЕРЕСЧЁТА ПРИ ИЗМЕНЕНИИ lead_time ---
+            current_lead_time = CONFIG['ai']['lead_time_days']
+            forecast_lead_time = int(row['lead_time_days']) if row['lead_time_days'] else 14
+            
+            if forecast_lead_time != current_lead_time:
+                # Пересчитываем математические параметры
+                base_demand = int(curr_qty + avg_sales * current_lead_time)
+                safety_stock = int(avg_sales * 0.2)  # Fallback: 20% от avg_sales
+                recommended_qty = base_demand + safety_stock
+                days_to_zero = round(curr_qty / avg_sales, 1) if avg_sales > 0 else 999.0
+                calc_zero_date = (today + pd.Timedelta(days=int(days_to_zero))).strftime('%Y-%m-%d')
+                
+                conn.execute("""
+                    UPDATE ai_forecasts
+                    SET predicted_zero_date = ?, recommended_qty = ?,
+                        lead_time_days = ?, safety_stock = ?, base_demand = ?,
+                        needs_recalc = 0
+                    WHERE id = ?
+                """, (calc_zero_date, recommended_qty, current_lead_time, safety_stock,
+                      base_demand - safety_stock, db_id))
+                continue  # Пропускаем стандартную логику
+            
             # --- ЗАЩИТА ОТ ИИ-ГАЛЛЮЦИНАЦИЙ (37 апреля и т.д.) ---
             pred_date = pd.to_datetime(row['predicted_zero_date'], errors='coerce')
-            if pd.isna(pred_date): 
+            if pd.isna(pred_date):
                 # Если дата кривая (NaT), ставим безопасную заглушку от "сегодня"
                 pred_date = today + pd.Timedelta(days=30)
 
@@ -82,8 +118,8 @@ def verify_shadow_forecasts():
                 lost_value = days_lost * avg_sales * price
                 
                 conn.execute("""
-                    UPDATE ai_forecasts 
-                    SET status = '🔴 Товар отсутствует', lost_sales_value = ?, overstock_value = 0 
+                    UPDATE ai_forecasts
+                    SET status = '🔴 Товар отсутствует', lost_sales_value = ?, overstock_value = 0
                     WHERE id = ?
                 """, (lost_value, db_id))
                 continue
@@ -93,8 +129,8 @@ def verify_shadow_forecasts():
                 overstock_qty = curr_qty - (avg_sales * 44)
                 overstock_value = max(0, overstock_qty * price)
                 conn.execute("""
-                    UPDATE ai_forecasts 
-                    SET status = '🧊 Перезатарка', overstock_value = ?, lost_sales_value = 0 
+                    UPDATE ai_forecasts
+                    SET status = '🧊 Перезатарка', overstock_value = ?, lost_sales_value = 0
                     WHERE id = ?
                 """, (overstock_value, db_id))
             else:
@@ -138,6 +174,10 @@ if 'dismissed_names' not in st.session_state:
                         recommended_qty INTEGER,
                         reason TEXT,
                         avg_daily_sales REAL,
+                        lead_time_days INTEGER DEFAULT 14,
+                        safety_stock INTEGER DEFAULT 0,
+                        base_demand INTEGER DEFAULT 0,
+                        needs_recalc INTEGER DEFAULT 0,
                         status TEXT DEFAULT '⏳ Наблюдение', -- '⏳ Наблюдение', '📉 Упущенная выгода', '🧊 Перезатарка', '✅ Точный прогноз'
                         lost_sales_value REAL DEFAULT 0,
                         overstock_value REAL DEFAULT 0

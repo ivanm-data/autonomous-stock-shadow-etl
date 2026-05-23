@@ -160,19 +160,31 @@ def save_anomaly_to_db(data: dict):
         except Exception:
             pass
         conn.commit()
-    st.cache_data.clear()
+    try:
+        load_anomalies.clear()
+        load_anomaly_report.clear()
+    except Exception:
+        pass
 
 def close_anomaly_in_db(anomaly_id: int, comment: str):
     with get_connection() as conn:
         conn.execute(get_close_anomaly_query(), {"id": anomaly_id, "comment": comment})
         conn.commit()
-    st.cache_data.clear()
+    try:
+        load_anomalies.clear()
+        load_anomaly_report.clear()
+    except Exception:
+        pass
 
 def cancel_anomaly_in_db(anomaly_id: int, comment: str):
     with get_connection() as conn:
         conn.execute(get_cancel_anomaly_query(), {"id": anomaly_id, "comment": comment})
         conn.commit()
-    st.cache_data.clear()
+    try:
+        load_anomalies.clear()
+        load_anomaly_report.clear()
+    except Exception:
+        pass
 
 @st.cache_data(ttl=3600)
 def load_dead_stock_analysis() -> pd.DataFrame:

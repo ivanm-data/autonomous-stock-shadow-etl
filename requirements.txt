@@ -3,6 +3,7 @@ beautifulsoup4
 pandas
 rich
 streamlit
+nicegui
 Pillow
 matplotlib
 seaborn

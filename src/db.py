@@ -1,7 +1,7 @@
 import json
 import sqlite3
+import functools
 import pandas as pd
-import streamlit as st
 from pathlib import Path
 from contextlib import contextmanager
 
@@ -30,7 +30,7 @@ def get_connection():
     finally:
         conn.close()
 
-@st.cache_data(ttl=3600)
+@functools.lru_cache(maxsize=1)
 def get_db_stats():
     if not DB_PATH.exists(): return None
     with get_connection() as conn:
@@ -74,7 +74,7 @@ def update_anomaly_inbox():
             """, (today, row['sku'], row['item_name'], row['qty_old'], row['qty_new'], row['delta'], row['history_count'], row['old_name_alias'], row['old_sku_alias']))
         conn.commit()
 
-@st.cache_data(ttl=3600)
+@functools.lru_cache(maxsize=1)
 def load_anomalies() -> pd.DataFrame:
     """Теперь читает аномалии из надежного Inbox, а не вычисляет на лету"""
     if not DB_PATH.exists(): return pd.DataFrame()
@@ -96,7 +96,7 @@ def load_anomalies() -> pd.DataFrame:
         """, conn)
         return df
 
-@st.cache_data(ttl=3600)
+@functools.lru_cache(maxsize=1)
 def load_inventory() -> pd.DataFrame:
     """Загружает инвентарь, используя GROUP BY для получения самой свежей записи на товар"""
     if not DB_PATH.exists(): return pd.DataFrame()
@@ -143,7 +143,7 @@ def load_inventory() -> pd.DataFrame:
             
         return df
 
-@st.cache_data(ttl=60) # Кэшируем на минуту, чтобы не дергать базу постоянно
+@functools.lru_cache(maxsize=4) # Кэшируем несколько статусов
 def load_anomaly_report(status="Открыта") -> pd.DataFrame:
     if not DB_PATH.exists(): return pd.DataFrame()
     with get_connection() as conn:
@@ -161,8 +161,8 @@ def save_anomaly_to_db(data: dict):
             pass
         conn.commit()
     try:
-        load_anomalies.clear()
-        load_anomaly_report.clear()
+        load_anomalies.cache_clear()
+        load_anomaly_report.cache_clear()
     except Exception:
         pass
 
@@ -171,8 +171,8 @@ def close_anomaly_in_db(anomaly_id: int, comment: str):
         conn.execute(get_close_anomaly_query(), {"id": anomaly_id, "comment": comment})
         conn.commit()
     try:
-        load_anomalies.clear()
-        load_anomaly_report.clear()
+        load_anomalies.cache_clear()
+        load_anomaly_report.cache_clear()
     except Exception:
         pass
 
@@ -181,12 +181,12 @@ def cancel_anomaly_in_db(anomaly_id: int, comment: str):
         conn.execute(get_cancel_anomaly_query(), {"id": anomaly_id, "comment": comment})
         conn.commit()
     try:
-        load_anomalies.clear()
-        load_anomaly_report.clear()
+        load_anomalies.cache_clear()
+        load_anomaly_report.cache_clear()
     except Exception:
         pass
 
-@st.cache_data(ttl=3600)
+@functools.lru_cache(maxsize=1)
 def load_dead_stock_analysis() -> pd.DataFrame:
     if not DB_PATH.exists(): return pd.DataFrame()
     history_depth = CONFIG['database']['history_depth_days']
@@ -215,7 +215,7 @@ def load_dead_stock_analysis() -> pd.DataFrame:
     res.rename(columns={'sku': 'Артикул', 'item_name': 'Наименование', 'category': 'Категория', 'price': 'Цена', 'quantity': 'Остаток'}, inplace=True)
     return res
 
-@st.cache_data(ttl=3600)
+@functools.lru_cache(maxsize=256)
 def load_velocity_history(item_name: str, sku: str = "") -> pd.DataFrame:
     if not DB_PATH.exists() or not item_name: return pd.DataFrame()
     history_depth = CONFIG['database']['history_depth_days']
@@ -271,7 +271,7 @@ def load_velocity_history(item_name: str, sku: str = "") -> pd.DataFrame:
         
     return combined_df
 
-@st.cache_data(ttl=3600)
+@functools.lru_cache(maxsize=1)
 def get_all_historical_items() -> dict:
     """Выгружает все имена, артикулы и статусы актуальности за всю историю"""
     if not DB_PATH.exists(): return {}

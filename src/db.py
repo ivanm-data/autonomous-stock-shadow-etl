@@ -76,7 +76,7 @@ def update_anomaly_inbox():
 
 @functools.lru_cache(maxsize=1)
 def load_anomalies() -> pd.DataFrame:
-    """Теперь читает аномалии из надежного Inbox, а не вычисляет на лету"""
+    """Читает аномалии из Inbox только за последнюю дату (сегодня)"""
     if not DB_PATH.exists(): return pd.DataFrame()
     
     update_anomaly_inbox() # Проверяем новые скачки перед загрузкой
@@ -93,8 +93,10 @@ def load_anomalies() -> pd.DataFrame:
                 old_name_alias,
                 old_sku_alias
             FROM anomaly_inbox
+            WHERE detected_date = (SELECT MAX(detected_date) FROM anomaly_inbox)
         """, conn)
         return df
+
 
 @functools.lru_cache(maxsize=1)
 def load_inventory() -> pd.DataFrame:

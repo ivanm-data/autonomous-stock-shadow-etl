@@ -4,19 +4,47 @@ main.py — точка входа нового приложения на NiceGUI
 """
 import sys
 import os
+import logging
+import traceback
+from pathlib import Path
 
 # Добавляем src/ в путь поиска модулей, чтобы работали импорты db, nice_views и т.д.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from nicegui import ui
+# ─── Настройка логирования ────────────────────────────────────────────────────
+LOG_PATH = Path(__file__).resolve().parent.parent / 'logs' / 'nicegui.log'
+LOG_PATH.parent.mkdir(exist_ok=True)
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_PATH, encoding='utf-8', mode='w'),
+        logging.StreamHandler(sys.stdout),
+    ]
+)
+logger = logging.getLogger('shadow_stock')
+logger.info('=== Shadow Stock ERP starting ===')
+logger.info(f'Log file: {LOG_PATH}')
+
+from nicegui import ui, app
 import db
 from nice_views import stock_view
+from nice_views import anomalies_view
+
+# ─── Перехватчик ВСЕХ необработанных исключений NiceGUI ──────────────────────
+def on_unhandled_exception(e: Exception) -> None:
+    logger.error('=== UNHANDLED EXCEPTION IN NICEGUI ===')
+    logger.error(traceback.format_exc())
+
+app.on_exception(on_unhandled_exception)
 
 # --- Инициализация: прогреваем кэш БД при старте ---
 try:
     db.get_db_stats()
+    logger.info('DB stats loaded OK')
 except Exception as e:
-    print(f"[WARN] Не удалось получить статистику БД при старте: {e}")
+    logger.warning(f'Could not load DB stats: {e}')
 
 
 # ─────────────────────────────────────────────
@@ -31,7 +59,7 @@ def index():
 
         with ui.column().classes('gap-1 q-px-sm q-pt-sm'):
             ui.button('📦  Склад',      on_click=lambda: ui.navigate.to('/stock')).props('flat align=left').classes('w-full text-left')
-            ui.button('⚠️  Аномалии',   on_click=lambda: ui.notify('В разработке…', type='info')).props('flat align=left').classes('w-full text-left')
+            ui.button('⚠️  Аномалии',   on_click=lambda: ui.navigate.to('/anomalies')).props('flat align=left').classes('w-full text-left')
             ui.button('📥  Приёмка',    on_click=lambda: ui.notify('В разработке…', type='info')).props('flat align=left').classes('w-full text-left')
             ui.button('📊  Аналитика',  on_click=lambda: ui.notify('В разработке…', type='info')).props('flat align=left').classes('w-full text-left')
 
@@ -54,7 +82,7 @@ def index():
                 ui.label('📦 Склад').classes('text-lg font-semibold')
                 ui.label('Актуальные остатки').classes('text-gray-500 text-sm')
 
-            with ui.card().classes('cursor-pointer hover:shadow-lg transition-shadow p-6 items-center gap-2').on('click', lambda: ui.notify('В разработке…', type='info')):
+            with ui.card().classes('cursor-pointer hover:shadow-lg transition-shadow p-6 items-center gap-2').on('click', lambda: ui.navigate.to('/anomalies')):
                 ui.icon('warning_amber', size='48px').classes('text-orange-500')
                 ui.label('⚠️ Аномалии').classes('text-lg font-semibold')
                 ui.label('Скачки остатков').classes('text-gray-500 text-sm')
@@ -69,16 +97,18 @@ def index():
 #  Подключаем все дочерние страницы
 # ─────────────────────────────────────────────
 stock_view.setup_page()
+anomalies_view.setup_page()
 
 
 # ─────────────────────────────────────────────
 #  Запуск сервера
 # ─────────────────────────────────────────────
 if __name__ in {'__main__', '__mp_main__'}:
+    logger.info(f'Starting NiceGUI on port 8080')
     ui.run(
         title='Shadow Stock ERP',
         port=8080,
         language='ru',
         favicon='🏭',
-        reload=False,        # отключаем авто-перезапуск в продакшне
+        reload=False,
     )

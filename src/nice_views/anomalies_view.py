@@ -10,6 +10,7 @@ import re
 import difflib
 import traceback
 import db
+from nice_views.shared_layout import build_shell
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -69,16 +70,10 @@ def setup_page():
     def anomalies_page():
         logger.info('anomalies_page() handler entered')
 
-        # dismissed — список скрытых имён, живёт в замыкании страницы.
-        # Создаётся заново при каждом открытии вкладки, но не сбрасывается
-        # при refresh внутри одной сессии (т.к. anomalies_page() вызывается
-        # только один раз при первом открытии URL).
         dismissed: list[str] = []
 
-        # ── Шапка ────────────────────────────────────────────────────────────
-        with ui.header(elevated=True).classes('bg-primary text-white items-center'):
-            ui.button(on_click=lambda: ui.navigate.to('/'), icon='home').props('flat color=white')
-            ui.label('⚠️ Аномалии').classes('text-xl font-bold ml-2')
+        # ── Шапка + сайдбар (общая тёмная разметка) ──────────────────────────
+        build_shell('/anomalies')
 
         # ── refreshable внутри страницы — per-client ─────────────────────────
         @ui.refreshable

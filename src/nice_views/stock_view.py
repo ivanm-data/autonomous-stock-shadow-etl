@@ -8,15 +8,13 @@ if _src_dir not in sys.path:
     sys.path.insert(0, _src_dir)
 
 import db
+from nice_views.shared_layout import build_shell
 
 
 def setup_page():
     @ui.page('/stock')
     def stock_page():
-        # --- ШАПКА ---
-        with ui.header(elevated=True).classes('bg-primary text-white items-center'):
-            ui.button(on_click=lambda: ui.navigate.to('/'), icon='home').props('flat color=white')
-            ui.label('📦 Склад').classes('text-xl font-bold ml-2')
+        build_shell('/stock')
 
         # --- ОСНОВНОЙ КОНТЕНТ ---
         with ui.column().classes('w-full p-4 gap-4'):

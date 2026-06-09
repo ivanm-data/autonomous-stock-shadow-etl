@@ -8,10 +8,10 @@ import logging
 import traceback
 from pathlib import Path
 
-# Добавляем src/ в путь поиска модулей, чтобы работали импорты db, nice_views и т.д.
+# Добавляем src/ в путь поиска модулей
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# ─── Настройка логирования ────────────────────────────────────────────────────
+# ─── Логирование ──────────────────────────────────────────────────────────────
 LOG_PATH = Path(__file__).resolve().parent.parent / 'logs' / 'nicegui.log'
 LOG_PATH.parent.mkdir(exist_ok=True)
 
@@ -24,22 +24,22 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger('shadow_stock')
-logger.info('=== Shadow Stock ERP starting ===')
+logger.info('=== Autonomous Stock Shadow ETL starting ===')
 logger.info(f'Log file: {LOG_PATH}')
 
 from nicegui import ui, app
 import db
-from nice_views import stock_view
-from nice_views import anomalies_view
+from nice_views import stock_view, anomalies_view
+from nice_views.shared_layout import build_shell, DARK_CSS
 
-# ─── Перехватчик ВСЕХ необработанных исключений NiceGUI ──────────────────────
+# ─── Перехватчик необработанных исключений NiceGUI ────────────────────────────
 def on_unhandled_exception(e: Exception) -> None:
     logger.error('=== UNHANDLED EXCEPTION IN NICEGUI ===')
     logger.error(traceback.format_exc())
 
 app.on_exception(on_unhandled_exception)
 
-# --- Инициализация: прогреваем кэш БД при старте ---
+# ─── Прогрев кэша при старте ──────────────────────────────────────────────────
 try:
     db.get_db_stats()
     logger.info('DB stats loaded OK')
@@ -47,68 +47,75 @@ except Exception as e:
     logger.warning(f'Could not load DB stats: {e}')
 
 
-# ─────────────────────────────────────────────
-#  ГЛАВНАЯ СТРАНИЦА — Дашборд / Приветствие
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+#  ГЛАВНАЯ СТРАНИЦА — Дашборд
+# ─────────────────────────────────────────────────────────────────────────────
 @ui.page('/')
 def index():
-    # Drawer создаём первым, чтобы header мог его переключать
-    with ui.left_drawer(elevated=True, value=True).classes('bg-blue-50 pt-4') as left_drawer:
-        ui.label('Навигация').classes('text-lg font-bold q-px-md q-mb-sm')
-        ui.separator()
+    build_shell('/')
+    ui.add_css(DARK_CSS)
 
-        with ui.column().classes('gap-1 q-px-sm q-pt-sm'):
-            ui.button('📦  Склад',      on_click=lambda: ui.navigate.to('/stock')).props('flat align=left').classes('w-full text-left')
-            ui.button('⚠️  Аномалии',   on_click=lambda: ui.navigate.to('/anomalies')).props('flat align=left').classes('w-full text-left')
-            ui.button('📥  Приёмка',    on_click=lambda: ui.notify('В разработке…', type='info')).props('flat align=left').classes('w-full text-left')
-            ui.button('📊  Аналитика',  on_click=lambda: ui.notify('В разработке…', type='info')).props('flat align=left').classes('w-full text-left')
+    with ui.column().classes('w-full items-center q-pa-xl gap-8').style('background-color:#0d0d0d; min-height:100vh;'):
 
-    # Шапка
-    with ui.header(elevated=True).classes('bg-primary text-white items-center justify-between'):
-        ui.button(on_click=lambda: left_drawer.toggle(), icon='menu').props('flat color=white')
-        ui.label('🏭 Shadow Stock ERP').classes('text-xl font-bold')
-        ui.space()
+        # ── Приветствие ───────────────────────────────────────────────────
+        with ui.column().classes('items-center gap-2 pt-8'):
+            ui.icon('diamond', size='64px').style('color: #60a5fa;')
+            ui.label('Autonomous Stock Shadow ETL').classes('text-white font-bold').style('font-size:2rem;')
+            ui.label('Система теневого контроля складских остатков').style('color:#9ca3af; font-size:1rem;')
 
-    # Контент главной страницы
-    with ui.column().classes('w-full items-center justify-center q-pa-xl gap-6'):
-        ui.icon('inventory_2', size='80px').classes('text-primary')
-        ui.label('Добро пожаловать!').classes('text-3xl font-bold')
-        ui.label('Shadow Stock ERP — новый интерфейс на базе NiceGUI').classes('text-xl text-gray-500')
-        ui.separator().classes('w-64')
+        ui.separator().style('background-color:#2a2a2a; width:400px;')
+
+        # ── Карточки навигации: ОПЕРАЦИИ ─────────────────────────────────
+        ui.label('🛠 ОПЕРАЦИИ').style('color:#6b7280; font-size:0.7rem; font-weight:700; letter-spacing:0.1em; text-transform:uppercase;')
 
         with ui.row().classes('gap-4 flex-wrap justify-center'):
-            with ui.card().classes('cursor-pointer hover:shadow-lg transition-shadow p-6 items-center gap-2').on('click', lambda: ui.navigate.to('/stock')):
-                ui.icon('warehouse', size='48px').classes('text-blue-500')
-                ui.label('📦 Склад').classes('text-lg font-semibold')
-                ui.label('Актуальные остатки').classes('text-gray-500 text-sm')
 
-            with ui.card().classes('cursor-pointer hover:shadow-lg transition-shadow p-6 items-center gap-2').on('click', lambda: ui.navigate.to('/anomalies')):
-                ui.icon('warning_amber', size='48px').classes('text-orange-500')
-                ui.label('⚠️ Аномалии').classes('text-lg font-semibold')
-                ui.label('Скачки остатков').classes('text-gray-500 text-sm')
+            def _card(icon: str, icon_color: str, title: str, subtitle: str,
+                      route: str | None = None, wip: bool = False):
+                def click(r=route, w=wip):
+                    if w or r is None:
+                        ui.notify('🚧 В разработке…', type='info')
+                    else:
+                        ui.navigate.to(r)
+                with ui.card() \
+                        .classes('cursor-pointer dark-card p-6 items-center gap-2 transition-all') \
+                        .style('min-width:160px;') \
+                        .on('click', click):
+                    ui.icon(icon, size='48px').style(f'color: {icon_color};')
+                    ui.label(title).classes('text-white font-semibold text-base')
+                    ui.label(subtitle).style('color:#9ca3af; font-size:0.8rem;')
 
-            with ui.card().classes('cursor-pointer hover:shadow-lg transition-shadow p-6 items-center gap-2').on('click', lambda: ui.notify('В разработке…', type='info')):
-                ui.icon('move_to_inbox', size='48px').classes('text-green-500')
-                ui.label('📥 Приёмка').classes('text-lg font-semibold')
-                ui.label('Входящие поставки').classes('text-gray-500 text-sm')
+            _card('warehouse',     '#60a5fa', '📦 Склад',    'Актуальные остатки',   '/stock')
+            _card('warning_amber', '#f97316', '⚠️ Аномалии', 'Скачки остатков',      '/anomalies')
+            _card('task_alt',      '#ef4444', '🔥 Задачи',   'Открытые инциденты',   wip=True)
+            _card('move_to_inbox', '#22c55e', '📥 Приёмка',  'Входящие поставки',    wip=True)
+
+        # ── Карточки навигации: АНАЛИТИКА ────────────────────────────────
+        ui.label('📊 АНАЛИТИКА И KPI').style('color:#6b7280; font-size:0.7rem; font-weight:700; letter-spacing:0.1em; text-transform:uppercase; margin-top:8px;')
+
+        with ui.row().classes('gap-4 flex-wrap justify-center'):
+            _card('leaderboard',   '#a78bfa', '🎯 Эффективность',  'KPI и SLA',            wip=True)
+            _card('severe_cold',   '#38bdf8', '❄️ Неликвиды',      'Мёртвый сток',          wip=True)
+            _card('trending_up',   '#34d399', '📈 Оборачиваемость', 'Скорость продаж',       wip=True)
+            _card('science',       '#fb923c', '⚖️ A/B Тест',        'AI vs Человек',         wip=True)
 
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 #  Подключаем все дочерние страницы
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 stock_view.setup_page()
 anomalies_view.setup_page()
 
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 #  Запуск сервера
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 if __name__ in {'__main__', '__mp_main__'}:
-    logger.info(f'Starting NiceGUI on port 8080')
+    logger.info('Starting NiceGUI on port 8080')
     ui.run(
-        title='Shadow Stock ERP',
+        title='Autonomous Stock Shadow ETL',
         port=8080,
         language='ru',
-        favicon='🏭',
+        favicon='💎',
         reload=False,
     )

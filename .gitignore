@@ -15,6 +15,7 @@ env/
 .vscode/
 .antigravity/
 .amazonq/
+.roo/
 
 # Logs
 logs/*

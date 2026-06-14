@@ -108,15 +108,15 @@ def build_shell(current_route: str = '/'):
 
         _nav('📦  Склад',    '/stock')
         _nav('⚠️  Аномалии', '/anomalies')
-        _nav('🔥  Задачи',   '/tasks',     wip=True)
-        _nav('📥  Приёмка',  '/receiving', wip=True)
+        _nav('🔥  Задачи',   '/tasks')
+        _nav('📥  Приёмка',  '/receiving')
 
         ui.separator().style('background-color: #2a2a2a; margin: 4px 0;')
 
         # ── Секция: АНАЛИТИКА И KPI ──────────────────────────────────────
         ui.html('<span class="nav-section">📊&nbsp; Аналитика и KPI</span>')
 
-        _nav('🎯  Эффективность',           '/efficiency', wip=True)
+        _nav('🎯  Эффективность',           '/efficiency')
         _nav('❄️  Неликвиды',               '/deadstock',  wip=True)
         _nav('📈  Оборачиваемость',          '/velocity',   wip=True)
         _nav('⚖️  A/B Тест: AI vs Человек',  '/abtest',     wip=True)

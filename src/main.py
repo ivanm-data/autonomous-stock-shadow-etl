@@ -29,7 +29,7 @@ logger.info(f'Log file: {LOG_PATH}')
 
 from nicegui import ui, app
 import db
-from nice_views import stock_view, anomalies_view
+from nice_views import stock_view, anomalies_view, receiving_view, tasks_view, efficiency_view
 from nice_views.shared_layout import build_shell, DARK_CSS
 
 # ─── Перехватчик необработанных исключений NiceGUI ────────────────────────────
@@ -87,14 +87,14 @@ def index():
 
             _card('warehouse',     '#60a5fa', '📦 Склад',    'Актуальные остатки',   '/stock')
             _card('warning_amber', '#f97316', '⚠️ Аномалии', 'Скачки остатков',      '/anomalies')
-            _card('task_alt',      '#ef4444', '🔥 Задачи',   'Открытые инциденты',   wip=True)
-            _card('move_to_inbox', '#22c55e', '📥 Приёмка',  'Входящие поставки',    wip=True)
+            _card('task_alt',      '#ef4444', '🔥 Задачи',   'Открытые инциденты',   '/tasks')
+            _card('move_to_inbox', '#22c55e', '📥 Приёмка',  'Входящие поставки',    '/receiving')
 
         # ── Карточки навигации: АНАЛИТИКА ────────────────────────────────
         ui.label('📊 АНАЛИТИКА И KPI').style('color:#6b7280; font-size:0.7rem; font-weight:700; letter-spacing:0.1em; text-transform:uppercase; margin-top:8px;')
 
         with ui.row().classes('gap-4 flex-wrap justify-center'):
-            _card('leaderboard',   '#a78bfa', '🎯 Эффективность',  'KPI и SLA',            wip=True)
+            _card('leaderboard',   '#a78bfa', '🎯 Эффективность',  'KPI и SLA',            '/efficiency')
             _card('severe_cold',   '#38bdf8', '❄️ Неликвиды',      'Мёртвый сток',          wip=True)
             _card('trending_up',   '#34d399', '📈 Оборачиваемость', 'Скорость продаж',       wip=True)
             _card('science',       '#fb923c', '⚖️ A/B Тест',        'AI vs Человек',         wip=True)
@@ -105,6 +105,9 @@ def index():
 # ─────────────────────────────────────────────────────────────────────────────
 stock_view.setup_page()
 anomalies_view.setup_page()
+receiving_view.setup_page()
+tasks_view.setup_page()
+efficiency_view.setup_page()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

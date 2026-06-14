@@ -1,0 +1,780 @@
+"""
+efficiency_view.py — NiceGUI-версия вкладки «Эффективность».
+Полный перенос функционала из src/views/efficiency_view.py.
+"""
+from nicegui import ui
+import sys
+import os
+import logging
+import pandas as pd
+
+_src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
+
+import db
+from nice_views.shared_layout import build_shell
+from queries import get_sla_metrics_query
+
+logger = logging.getLogger('shadow_stock.efficiency')
+
+# ─── Константы ────────────────────────────────────────────────────────────────
+S_MTTR_NORM       = 8.0   # SLA норматив (часы)
+OVERHEAD_MINUTES  = 20
+MEDIAN_BATCH_SIZE = 17
+TIME_ESCALATION   = 20    # мин. (склад + офис)
+COST_PER_SHEET    = 1.2   # ₽
+AVG_DETECT_DAYS   = 90    # дней без системы
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Функции получения данных
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _kpi_data(include_tests: bool) -> dict | None:
+    with db.get_connection() as conn:
+        if include_tests:
+            q = "SELECT item_name, source, anomaly_type, status, detected_at, resolved_at FROM anomaly_log"
+        else:
+            q = """
+                SELECT item_name, source, anomaly_type, status, detected_at, resolved_at
+                FROM anomaly_log
+                WHERE anomaly_type NOT IN (
+                    'Тестовая запись', 'Системная ошибка',
+                    '📦 Плановый приход', '⏳ Догруз с сайта', '🔄 Обновление карточки'
+                )
+            """
+        df = pd.read_sql_query(q, conn)
+
+    if df.empty:
+        return None
+
+    total = len(df)
+
+    proactive_mask  = (
+        df['source'].isin(['Автоматически', 'Вручную (План)']) &
+        (df['anomaly_type'] != 'Успешная сверка')
+    )
+    proactive_issues = int(proactive_mask.sum())
+    proactive_count  = int(df['source'].isin(['Автоматически', 'Вручную (План)']).sum())
+    proactive_rate   = proactive_count / total * 100 if total else 0.0
+
+    # MTTR
+    resolved = df[
+        (df['status'] == 'Закрыта') &
+        (df['anomaly_type'] != 'Успешная сверка') &
+        df['detected_at'].notnull() &
+        df['resolved_at'].notnull()
+    ].copy()
+
+    mttr = 0.0
+    if not resolved.empty:
+        resolved['detected_at'] = pd.to_datetime(resolved['detected_at'])
+        resolved['resolved_at'] = pd.to_datetime(resolved['resolved_at'])
+        times = (resolved['resolved_at'] - resolved['detected_at']).dt.total_seconds() / 3600.0
+        m     = times[times > 0].median()
+        mttr  = float(m) if not pd.isna(m) else 0.0
+
+    if 0 < mttr < 1:
+        mttr_disp = f"{mttr * 60:.0f} мин."
+    else:
+        mttr_disp = f"{mttr:.1f} ч."
+
+    # SLA Compliance
+    with db.get_connection() as conn:
+        sla_df = pd.read_sql_query(get_sla_metrics_query(sla_hours=S_MTTR_NORM), conn)
+
+    sla_rate = 100.0
+    if not sla_df.empty and sla_df.iloc[0]['total_resolved'] > 0:
+        w = sla_df.iloc[0]['within_sla']
+        if pd.isna(w): w = 0
+        sla_rate = float(w) / float(sla_df.iloc[0]['total_resolved']) * 100
+
+    # Экономия
+    min_per_item = OVERHEAD_MINUTES / MEDIAN_BATCH_SIZE
+    routine_h    = (total * min_per_item) / 60
+    comms_h      = (proactive_issues * TIME_ESCALATION) / 60
+    total_h      = routine_h + comms_h
+    h, m_part    = int(total_h), int(round((total_h - int(total_h)) * 60))
+    if m_part == 60: h += 1; m_part = 0
+    time_str = f"{h} ч. {m_part} мин."
+
+    opex_saved  = total * (COST_PER_SHEET / MEDIAN_BATCH_SIZE)
+    sheets      = total / MEDIAN_BATCH_SIZE
+    trees       = sheets / 10_000
+    risk_days   = proactive_issues * (AVG_DETECT_DAYS - 1)
+
+    return {
+        'risk_days':      risk_days,
+        'mttr':           mttr,
+        'mttr_disp':      mttr_disp,
+        'sla_rate':       sla_rate,
+        'time_str':       time_str,
+        'routine_h':      routine_h,
+        'comms_h':        comms_h,
+        'proactive_rate': proactive_rate,
+        'opex_saved':     opex_saved,
+        'sheets':         sheets,
+        'trees':          trees,
+    }
+
+
+def _ghosting_data() -> pd.DataFrame:
+    try:
+        with db.get_connection() as conn:
+            return pd.read_sql_query("""
+                WITH DailyStocks AS (
+                    SELECT SUBSTR(report_timestamp, 1, 10) AS date,
+                           item_name, quantity
+                    FROM stocks WHERE quantity > 0
+                )
+                SELECT d1.date AS "Дата",
+                       COUNT(d1.item_name) AS "Пропало на следующий день"
+                FROM DailyStocks d1
+                LEFT JOIN DailyStocks d2
+                    ON d1.item_name = d2.item_name
+                    AND date(d2.date) = date(d1.date, '+1 day')
+                WHERE d2.item_name IS NULL
+                  AND d1.date < date('now', 'localtime')
+                GROUP BY d1.date
+                ORDER BY d1.date ASC
+            """, conn)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _max_risk() -> float:
+    try:
+        with db.get_connection() as conn:
+            r = conn.execute(
+                "SELECT SUM(financial_impact) FROM anomaly_log "
+                "WHERE anomaly_type = 'Скрыт с витрины (Баг)'"
+            ).fetchone()[0]
+        return float(r) if r else 0.0
+    except Exception:
+        return 0.0
+
+
+def _iq_data(include_tests: bool) -> pd.DataFrame:
+    where = "" if include_tests else "WHERE anomaly_type != 'Тестовая запись'"
+    try:
+        with db.get_connection() as conn:
+            return pd.read_sql_query(f"""
+                SELECT
+                    DATE(detected_at) AS Day,
+                    CASE
+                        WHEN IFNULL(comment,'') LIKE '%[BUG]%'                  THEN 'Failures'
+                        WHEN source = 'Автоматически (Нейро-приемка)'           THEN '✨ AI Auto-Receive'
+                        WHEN anomaly_type IN (
+                            '📦 Плановый приход','⏳ Догруз с сайта',
+                            '🔄 Обновление карточки')                            THEN 'Routine (Manual)'
+                        WHEN anomaly_type = 'Системная ошибка'                  THEN 'Failures'
+                        WHEN anomaly_type = 'Тестовая запись'                   THEN 'Debug'
+                        ELSE 'Signal (Anomalies)'
+                    END AS cat,
+                    COUNT(*) AS count
+                FROM anomaly_log {where}
+                GROUP BY 1, 2 ORDER BY Day ASC
+            """, conn)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _fa_data(include_tests: bool) -> pd.DataFrame:
+    where = (
+        "WHERE anomaly_type != 'Успешная сверка' "
+        "AND IFNULL(comment,'') NOT LIKE '%[BUG]%' "
+        "AND source != 'Автоматически (Нейро-приемка)'"
+    )
+    if not include_tests:
+        where += " AND anomaly_type NOT IN ('Тестовая запись')"
+    try:
+        with db.get_connection() as conn:
+            return pd.read_sql_query(f"""
+                SELECT DATE(detected_at) AS Day,
+                       anomaly_type, COUNT(*) AS count
+                FROM anomaly_log {where}
+                GROUP BY 1, 2 ORDER BY Day ASC
+            """, conn)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _history_data(include_tests: bool) -> pd.DataFrame:
+    subq = ("(SELECT sku FROM stocks s "
+            "WHERE s.item_name = a.item_name AND sku != '' "
+            "ORDER BY report_timestamp DESC LIMIT 1) AS sku")
+    if include_tests:
+        q = f"""
+            SELECT a.id, a.detected_at, a.resolved_at, a.item_name,
+                   a.anomaly_type, a.qty_physical, a.source, a.comment, {subq}
+            FROM anomaly_log a
+            WHERE a.status != 'Открыта'
+              AND (
+                  a.anomaly_type NOT IN (
+                    '📦 Плановый приход','Успешная сверка',
+                    '⏳ Догруз с сайта','🔄 Обновление карточки')
+                  OR IFNULL(a.comment,'') LIKE '%[BUG]%'
+              )
+            ORDER BY a.resolved_at DESC LIMIT 50
+        """
+    else:
+        q = f"""
+            SELECT a.id, a.detected_at, a.resolved_at, a.item_name,
+                   a.anomaly_type, a.qty_physical, a.source, a.comment, {subq}
+            FROM anomaly_log a
+            WHERE a.status != 'Открыта'
+              AND a.anomaly_type NOT IN (
+                'Тестовая запись','Системная ошибка',
+                '📦 Плановый приход','Успешная сверка',
+                '⏳ Догруз с сайта','🔄 Обновление карточки')
+              AND IFNULL(a.comment,'') NOT LIKE '%[BUG]%'
+            ORDER BY a.resolved_at DESC LIMIT 50
+        """
+    try:
+        with db.get_connection() as conn:
+            return pd.read_sql_query(q, conn)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _legal_data() -> pd.DataFrame:
+    subq = ("(SELECT sku FROM stocks s "
+            "WHERE s.item_name = a.item_name AND sku != '' "
+            "ORDER BY report_timestamp DESC LIMIT 1) AS sku")
+    try:
+        with db.get_connection() as conn:
+            return pd.read_sql_query(f"""
+                SELECT a.id, a.detected_at, a.item_name, a.anomaly_type, a.comment,
+                       (a.qty_system - a.qty_physical) AS delta, {subq}
+                FROM anomaly_log a
+                WHERE a.anomaly_type IN (
+                    '📦 Плановый приход','Успешная сверка',
+                    '⏳ Догруз с сайта','🔄 Обновление карточки')
+                  AND IFNULL(a.comment,'') NOT LIKE '%[BUG]%'
+                  AND IFNULL(a.comment,'') NOT LIKE '🔗 Склеено (старое имя)%'
+                ORDER BY a.detected_at DESC LIMIT 50
+            """, conn)
+    except Exception:
+        return pd.DataFrame()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Вспомогательные рендеры
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _kpi_card(value: str, label: str, color: str, hint: str = ''):
+    with ui.card().classes('p-4').style(
+        f'background:#171717; border-left:3px solid {color}; min-width:180px;'
+    ):
+        ui.label(value).classes('text-white text-2xl font-bold')
+        ui.label(label).style('color:#9ca3af; font-size:0.78rem;')
+        if hint:
+            ui.label(hint).style('color:#6b7280; font-size:0.7rem;')
+
+
+def _area_echart(pivot: pd.DataFrame, color_map: dict) -> None:
+    dates  = pivot.index.tolist()
+    series = []
+    for col in pivot.columns:
+        c = color_map.get(col, '#94a3b8')
+        series.append({
+            'name':      col,
+            'type':      'line',
+            'stack':     'total',
+            'areaStyle': {'opacity': 0.35},
+            'smooth':    True,
+            'data':      [int(v) for v in pivot[col].tolist()],
+            'itemStyle': {'color': c},
+            'lineStyle': {'color': c},
+        })
+    ui.echart({
+        'backgroundColor': 'transparent',
+        'legend':  {'data': [s['name'] for s in series],
+                    'textStyle': {'color': '#9ca3af'}, 'type': 'scroll'},
+        'tooltip': {'trigger': 'axis'},
+        'xAxis':   {'type': 'category', 'data': dates,
+                    'axisLabel': {'color': '#6b7280'},
+                    'axisLine':  {'lineStyle': {'color': '#2a2a2a'}}},
+        'yAxis':   {'type': 'value',
+                    'axisLabel':  {'color': '#6b7280'},
+                    'splitLine':  {'lineStyle': {'color': '#1f1f1f'}}},
+        'series':  series,
+        'grid':    {'left': '3%', 'right': '4%', 'bottom': '3%', 'containLabel': True},
+    }).classes('w-full').style('height:300px;')
+
+
+def _history_row(row, refresh_cb):
+    is_bug = '[BUG]' in str(row.get('comment', ''))
+    anom_t = str(row.get('anomaly_type', ''))
+    sku    = str(row['sku']) if pd.notna(row.get('sku')) and row.get('sku') else '—'
+    date_s = str(row.get('resolved_at') or row.get('detected_at', ''))[:16]
+    cmt    = str(row.get('comment', '')) if pd.notna(row.get('comment')) else ''
+
+    tc = '#d1d5db'
+    if is_bug or anom_t in ('Утеря', 'Тихая отмена'):         tc = '#ef4444'
+    elif anom_t == 'Успешная сверка':                          tc = '#22c55e'
+    elif anom_t in ('Излишек', 'Пересорт (Склад)', 'Пересорт (1С)'): tc = '#f59e0b'
+
+    with ui.row().classes('w-full items-center gap-2 px-3 py-2 flex-wrap').style(
+        'border-bottom:1px solid #1a1a1a;'
+    ):
+        ui.label(date_s).style('color:#9ca3af; font-size:0.73rem; min-width:115px; flex-shrink:0;')
+        ui.label(f'🏷 {sku}').classes('font-mono').style(
+            'color:#6b7280; font-size:0.75rem; min-width:100px; flex-shrink:0;'
+        )
+        ui.label(str(row.get('item_name',''))).classes('flex-1 text-sm text-white')
+        ui.label(('🔴 ' if is_bug else '') + anom_t).style(
+            f'color:{tc}; font-size:0.78rem; min-width:130px; flex-shrink:0;'
+        )
+        ui.label(str(row.get('qty_physical', ''))).style(
+            'color:#9ca3af; font-size:0.78rem; min-width:35px; flex-shrink:0;'
+        )
+        ui.label((cmt[:45] + '…') if len(cmt) > 45 else cmt).style(
+            'color:#6b7280; font-size:0.72rem; min-width:100px; flex-shrink:0;'
+        )
+
+        with ui.row().classes('gap-1 flex-shrink-0'):
+            if is_bug:
+                ui.button('✅', on_click=None).props('flat size=xs').set_enabled(False) \
+                  .tooltip('Уже баг')
+            else:
+                def _mark_bug(_id=int(row['id'])):
+                    with db.get_connection() as conn:
+                        conn.execute(
+                            "UPDATE anomaly_log "
+                            "SET comment='[BUG] '||IFNULL(comment,'Ошибка UI') "
+                            "WHERE id=?", (_id,)
+                        )
+                        conn.commit()
+                    ui.notify('🚨 Помечено как баг', type='info')
+                    refresh_cb()
+
+                ui.button('🚨', on_click=_mark_bug).props('flat size=xs color=negative') \
+                  .tooltip('Пометить как баг UI/системы')
+
+            def _restore(_id=int(row['id'])):
+                with db.get_connection() as conn:
+                    conn.execute('DELETE FROM anomaly_log WHERE id=?', (_id,))
+                    conn.commit()
+                ui.notify('↩️ Возвращено в Аномалии', type='info')
+                refresh_cb()
+
+            ui.button('↩️', on_click=_restore).props('flat size=xs') \
+              .tooltip('Вернуть в Аномалии')
+
+
+def _legal_row(row, refresh_cb):
+    anom_t  = str(row.get('anomaly_type', ''))
+    sku     = str(row['sku']) if pd.notna(row.get('sku')) and row.get('sku') else '—'
+    date_s  = str(row.get('detected_at', ''))[:16]
+    cmt     = str(row.get('comment', '')) if pd.notna(row.get('comment')) else ''
+    delta_v = int(row['delta']) if pd.notna(row.get('delta')) else 0
+    delta_s = f'+{delta_v} шт.' if delta_v > 0 else f'{delta_v} шт.'
+
+    tc = '#d1d5db'
+    if anom_t == 'Успешная сверка':       tc = '#22c55e'
+    elif anom_t == '⏳ Догруз с сайта':   tc = '#f59e0b'
+    elif anom_t == '🔄 Обновление карточки': tc = '#a78bfa'
+
+    with ui.row().classes('w-full items-center gap-2 px-3 py-2 flex-wrap').style(
+        'border-bottom:1px solid #1a1a1a;'
+    ):
+        ui.label(date_s).style('color:#9ca3af; font-size:0.73rem; min-width:115px; flex-shrink:0;')
+        ui.label(f'🏷 {sku}').classes('font-mono').style(
+            'color:#6b7280; font-size:0.75rem; min-width:100px; flex-shrink:0;'
+        )
+        ui.label(str(row.get('item_name',''))).classes('flex-1 text-sm text-white')
+        if cmt:
+            ui.label(f'💬 {cmt[:40]}').style('color:#6b7280; font-size:0.72rem; flex-shrink:0;')
+
+        with ui.row().classes('items-center gap-1 flex-shrink-0'):
+            ui.label(anom_t).style(f'color:{tc}; font-size:0.78rem;')
+            if delta_v != 0:
+                ui.label(delta_s).style('color:#9ca3af; font-size:0.72rem;')
+
+        with ui.row().classes('gap-1 flex-shrink-0'):
+            def _bug_leg(_id=int(row['id'])):
+                with db.get_connection() as conn:
+                    conn.execute(
+                        "UPDATE anomaly_log "
+                        "SET comment='[BUG] '||IFNULL(comment,'Ошибочная легализация') "
+                        "WHERE id=?", (_id,)
+                    )
+                    conn.commit()
+                ui.notify('🚨 Помечено как баг', type='info')
+                refresh_cb()
+
+            def _restore_leg(_id=int(row['id'])):
+                with db.get_connection() as conn:
+                    conn.execute('DELETE FROM anomaly_log WHERE id=?', (_id,))
+                    conn.commit()
+                ui.notify('↩️ Возвращено в Аномалии', type='info')
+                refresh_cb()
+
+            ui.button('🚨', on_click=_bug_leg).props('flat size=xs color=negative') \
+              .tooltip('Ошибся кнопкой? → в баги')
+            ui.button('↩️', on_click=_restore_leg).props('flat size=xs') \
+              .tooltip('Вернуть в Аномалии')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Страница
+# ─────────────────────────────────────────────────────────────────────────────
+
+def setup_page():
+
+    @ui.page('/efficiency')
+    def efficiency_page():
+        logger.info('efficiency_page() handler entered')
+        build_shell('/efficiency')
+
+        # Состояние за пределами refreshable — выживает при обновлениях
+        include_state = [False]
+        iq_sel_state  = [None]   # None = все категории
+        fa_sel_state  = [None]   # None = все типы
+        risk_state    = [5]      # % доля онлайн-продаж
+
+        with ui.column().classes('w-full p-4 gap-6').style(
+            'background:#0d0d0d; min-height:100vh;'
+        ):
+            # ── Заголовок ─────────────────────────────────────────────────
+            with ui.row().classes('w-full items-center justify-between flex-wrap gap-2'):
+                ui.label('🎯 KPI: Эффективность и Качество (Lean Model)').classes(
+                    'text-white text-xl font-bold'
+                )
+                include_cb = ui.checkbox('🧪 Тестовые данные и баги', value=False)
+
+            ui.separator().style('background:#2a2a2a;')
+
+            # ═══════════════════════════════════════════════════════════════
+            # 1. KPI-карточки
+            # ═══════════════════════════════════════════════════════════════
+            @ui.refreshable
+            def render_kpi():
+                kpi = _kpi_data(include_state[0])
+                if not kpi:
+                    with ui.card().classes('w-full p-4').style(
+                        'background:#171717; border:1px solid #2a2a2a;'
+                    ):
+                        ui.label('ℹ️ Пока нет данных для расчёта KPI.').classes('text-gray-400')
+                    return
+
+                mttr_ok = kpi['mttr'] <= S_MTTR_NORM
+                sla_ok  = kpi['sla_rate'] >= 90
+
+                # Строка 1: 4 показателя
+                with ui.row().classes('gap-4 flex-wrap'):
+                    _kpi_card(
+                        f"{kpi['risk_days']:,.0f} дн.".replace(',', ' '),
+                        'Risk — Предотвращено риска', '#f97316',
+                        f'MTTD: <24ч  (→ {AVG_DETECT_DAYS} дн. без системы)'
+                    )
+                    _kpi_card(
+                        kpi['mttr_disp'],
+                        'MTTR — Время устранения',
+                        '#22c55e' if mttr_ok else '#ef4444',
+                        f'SLA: {S_MTTR_NORM}ч  ▸  {"✅ OK" if mttr_ok else "❌ Превышен"}'
+                    )
+                    _kpi_card(
+                        f"{kpi['sla_rate']:.1f}%",
+                        'SLA Compliance',
+                        '#22c55e' if sla_ok else '#ef4444',
+                        f'Цель: >90%  ▸  {"✅ OK" if sla_ok else "❌ Ниже нормы"}'
+                    )
+                    _kpi_card(
+                        kpi['time_str'],
+                        'Time — Сэкономлено времени',
+                        '#60a5fa',
+                        f'Рутина: {kpi["routine_h"]:.2f}ч + Комм: {kpi["comms_h"]:.2f}ч'
+                    )
+
+                # Строка 2: 3 показателя
+                with ui.row().classes('gap-4 flex-wrap mt-2'):
+                    with ui.card().classes('p-4').style(
+                        'background:#171717; border-left:3px solid #a78bfa; min-width:180px;'
+                    ):
+                        ui.label(f"{kpi['proactive_rate']:.1f}%").classes('text-white text-2xl font-bold')
+                        ui.label('PR — Проактивность').style('color:#9ca3af; font-size:0.78rem;')
+                        ui.linear_progress(kpi['proactive_rate'] / 100).props('color=deep-purple')
+
+                    _kpi_card(
+                        f"{kpi['opex_saved']:.2f} ₽",
+                        'OPEX — Снижение затрат', '#34d399',
+                        f'Бумага: {kpi["sheets"]:.1f} листов А4'
+                    )
+                    _kpi_card(
+                        f"{kpi['trees']:.5f} 🌳",
+                        'ESG — Eco Impact', '#22c55e',
+                        f'{kpi["sheets"]:.1f} стр. × {COST_PER_SHEET}₽/лист'
+                    )
+
+            render_kpi()
+
+            ui.separator().style('background:#2a2a2a;')
+
+            # ═══════════════════════════════════════════════════════════════
+            # 2. Ghosting Rate (статичный блок — не зависит от include_tests)
+            # ═══════════════════════════════════════════════════════════════
+            ui.label('👻 Уровень мерцания сайта (Ghosting Rate)').classes(
+                'text-white text-xl font-bold'
+            )
+            ui.label(
+                'Товары, которые вчера имели положительный остаток, '
+                'а сегодня бесследно пропали с витрины.'
+            ).style('color:#9ca3af; font-size:0.82rem;')
+
+            df_ghost = _ghosting_data()
+            if not df_ghost.empty and len(df_ghost) > 1:
+                avg_g = df_ghost['Пропало на следующий день'].mean()
+                ui.echart({
+                    'backgroundColor': 'transparent',
+                    'tooltip': {'trigger': 'axis'},
+                    'xAxis':  {'type': 'category',
+                                'data': df_ghost['Дата'].tolist(),
+                                'axisLabel': {'color': '#6b7280'},
+                                'axisLine':  {'lineStyle': {'color': '#2a2a2a'}}},
+                    'yAxis':  {'type': 'value',
+                                'axisLabel':  {'color': '#6b7280'},
+                                'splitLine':  {'lineStyle': {'color': '#1f1f1f'}}},
+                    'series': [{'type': 'bar',
+                                'data': df_ghost['Пропало на следующий день'].tolist(),
+                                'itemStyle': {'color': '#ef4444', 'borderRadius': 3}}],
+                    'grid':   {'left':'3%','right':'4%','bottom':'3%','containLabel':True},
+                }).classes('w-full').style('height:260px;')
+                if avg_g > 0:
+                    with ui.card().classes('w-full p-3').style(
+                        'background:#1e1b4b; border:1px solid #818cf8;'
+                    ):
+                        ui.label(
+                            f'💡 В среднем {int(avg_g)} товаров исчезает с сайта каждый день. '
+                            'На вкладке «Склад» вы вручную классифицируете: '
+                            'легальная ли это продажа или «Баг 1С».'
+                        ).classes('text-indigo-200 text-sm')
+            else:
+                with ui.card().classes('w-full p-3').style(
+                    'background:#052e16; border:1px solid #22c55e;'
+                ):
+                    ui.label(
+                        '✅ Мало данных для построения графика, '
+                        'или сайт работает идеально.'
+                    ).classes('text-green-400 text-sm')
+
+            ui.separator().style('background:#2a2a2a;')
+
+            # ═══════════════════════════════════════════════════════════════
+            # 3. Risk Value Modeling (реактивный слайдер без refreshable)
+            # ═══════════════════════════════════════════════════════════════
+            ui.label('💸 Оценка упущенной выгоды (Risk Value Modeling)').classes(
+                'text-white text-xl font-bold'
+            )
+
+            total_max_risk = _max_risk()
+
+            with ui.row().classes('gap-6 items-start flex-wrap'):
+                with ui.column().classes('gap-2').style('min-width:260px;'):
+                    ui.label('Доля сайта в продажах (%)').style(
+                        'color:#d1d5db; font-size:0.9rem;'
+                    )
+                    pct_lbl = ui.label('5%').style('color:#9ca3af; font-size:0.85rem;')
+                    slider  = ui.slider(min=1, max=100, value=5).classes('w-full')
+                    ui.label(
+                        'Коэффициент атрибуции канала: какая доля этих товаров '
+                        'реально продалась бы через онлайн-витрину?'
+                    ).style('color:#6b7280; font-size:0.72rem;')
+
+                init_adj = total_max_risk * 0.05
+                with ui.card().classes('p-6').style(
+                    'background:#171717; border-left:3px solid #f97316;'
+                ):
+                    risk_val_lbl  = ui.label(
+                        f'{init_adj:,.0f} ₽'.replace(',', ' ')
+                    ).classes('text-white text-2xl font-bold')
+                    ui.label('Скрытая упущенная выгода (Ghosting Loss)').style(
+                        'color:#9ca3af; font-size:0.8rem;'
+                    )
+                    risk_hint_lbl = ui.label(
+                        f'Мак. риск: {total_max_risk:,.0f} ₽ × 5%'.replace(',', ' ')
+                    ).style('color:#6b7280; font-size:0.72rem;')
+
+            def on_slide(e):
+                v   = int(e.value)
+                adj = total_max_risk * (v / 100)
+                risk_val_lbl.set_text(f'{adj:,.0f} ₽'.replace(',', ' '))
+                pct_lbl.set_text(f'{v}%')
+                risk_hint_lbl.set_text(
+                    f'Мак. риск: {total_max_risk:,.0f} ₽ × {v}%'.replace(',', ' ')
+                )
+
+            slider.on_value_change(on_slide)
+
+            ui.separator().style('background:#2a2a2a;')
+
+            # ═══════════════════════════════════════════════════════════════
+            # 4. System IQ (с фильтром по категориям)
+            # ═══════════════════════════════════════════════════════════════
+            ui.label('🤖 System IQ (Daily Health & Intel)').classes(
+                'text-white text-xl font-bold'
+            )
+
+            IQ_COLORS = {
+                'Routine (Manual)':    '#3b82f6',
+                '✨ AI Auto-Receive': '#8b5cf6',
+                'Debug':              '#6b7280',
+                'Failures':           '#ef4444',
+                'Signal (Anomalies)': '#22c55e',
+            }
+
+            @ui.refreshable
+            def render_iq():
+                df_iq = _iq_data(include_state[0])
+                if df_iq.empty:
+                    ui.label('Нет данных.').style('color:#6b7280;')
+                    return
+
+                all_cats  = sorted(df_iq['cat'].unique().tolist())
+                curr_sel  = [c for c in (iq_sel_state[0] or all_cats) if c in all_cats]
+
+                def on_iq_sel(e):
+                    iq_sel_state[0] = e.value
+                    render_iq.refresh()
+
+                sel_widget = ui.select(
+                    options=all_cats, value=curr_sel, multiple=True,
+                    label='Детализация System IQ',
+                ).classes('w-full')
+                sel_widget.on_value_change(on_iq_sel)
+
+                filtered = df_iq[df_iq['cat'].isin(sel_widget.value)] if sel_widget.value else pd.DataFrame()
+                if not filtered.empty:
+                    pivot = filtered.pivot(index='Day', columns='cat', values='count').fillna(0)
+                    _area_echart(pivot, IQ_COLORS)
+                    ui.label(
+                        '🟣 AI Auto-Receive: нейросеть  |  '
+                        '🔵 Routine: ручные клики  |  '
+                        '🟢 Signal: аномалии'
+                    ).style('color:#6b7280; font-size:0.72rem;')
+                else:
+                    ui.label('Выберите хотя бы одну категорию.').style('color:#9ca3af;')
+
+            render_iq()
+
+            ui.separator().style('background:#2a2a2a;')
+
+            # ═══════════════════════════════════════════════════════════════
+            # 5. Feature Adoption (с фильтром по типам)
+            # ═══════════════════════════════════════════════════════════════
+            ui.label('🖱️ Feature Adoption (Ручная нагрузка на менеджера)').classes(
+                'text-white text-xl font-bold'
+            )
+
+            @ui.refreshable
+            def render_fa():
+                df_fa = _fa_data(include_state[0])
+                if df_fa.empty:
+                    ui.label('Нет данных.').style('color:#6b7280;')
+                    return
+
+                all_types = sorted(df_fa['anomaly_type'].unique().tolist())
+                curr_sel  = [t for t in (fa_sel_state[0] or all_types) if t in all_types]
+
+                def on_fa_sel(e):
+                    fa_sel_state[0] = e.value
+                    render_fa.refresh()
+
+                sel_widget = ui.select(
+                    options=all_types, value=curr_sel, multiple=True,
+                    label='Динамика кликов',
+                ).classes('w-full')
+                sel_widget.on_value_change(on_fa_sel)
+
+                filtered = df_fa[df_fa['anomaly_type'].isin(sel_widget.value)] if sel_widget.value else pd.DataFrame()
+                if not filtered.empty:
+                    pivot = filtered.pivot(index='Day', columns='anomaly_type', values='count').fillna(0)
+                    _area_echart(pivot, {})  # auto-colors
+                    ui.label(
+                        'График показывает, сколько раз человек нажимал кнопки '
+                        'классификации. Автоматизация снижает эти показатели.'
+                    ).style('color:#6b7280; font-size:0.72rem;')
+                else:
+                    ui.label('Выберите хотя бы один тип.').style('color:#9ca3af;')
+
+            render_fa()
+
+            ui.separator().style('background:#2a2a2a;')
+
+            # ═══════════════════════════════════════════════════════════════
+            # 6. История инцидентов
+            # ═══════════════════════════════════════════════════════════════
+            ui.label('📜 История выявленных проблем (последние 50)').classes(
+                'text-white text-xl font-bold'
+            )
+            ui.label(
+                'Закрытые инциденты. Вы можете пометить ошибочные клики как баг системы.'
+            ).style('color:#9ca3af; font-size:0.82rem;')
+
+            @ui.refreshable
+            def render_hist():
+                df_h = _history_data(include_state[0])
+                if df_h.empty:
+                    ui.label('В истории нет инцидентов.').style('color:#6b7280;')
+                    return
+
+                with ui.card().classes('w-full').style(
+                    'background:#111111; border:1px solid #2a2a2a; overflow:hidden;'
+                ):
+                    # Шапка
+                    with ui.row().classes('w-full gap-2 px-3 py-2').style(
+                        'background:#1a1a1a; border-bottom:1px solid #2a2a2a;'
+                    ):
+                        for lbl in ('Дата','Артикул','Наименование','Тип','Факт','Комментарий','Баг','↩️'):
+                            ui.label(lbl).style(
+                                'color:#6b7280; font-size:0.65rem; font-weight:700; '
+                                'text-transform:uppercase; letter-spacing:0.05em;'
+                            )
+                    for _, row in df_h.iterrows():
+                        _history_row(row, render_hist.refresh)
+
+            render_hist()
+
+            ui.separator().style('background:#2a2a2a;')
+
+            # ═══════════════════════════════════════════════════════════════
+            # 7. Журнал рутины
+            # ═══════════════════════════════════════════════════════════════
+            ui.label('🙈 Журнал рутины (Легализованные аномалии)').classes(
+                'text-white text-xl font-bold'
+            )
+            ui.label(
+                'История плановых поступлений и успешных сверок.'
+            ).style('color:#9ca3af; font-size:0.82rem;')
+
+            @ui.refreshable
+            def render_legal():
+                df_l = _legal_data()
+                if df_l.empty:
+                    ui.label('Журнал рутины пуст.').style('color:#6b7280;')
+                    return
+
+                ui.label(f'Последние {len(df_l)} подтвержденных операций:').style(
+                    'color:#9ca3af; font-size:0.82rem;'
+                )
+                with ui.card().classes('w-full').style(
+                    'background:#111111; border:1px solid #2a2a2a; overflow:hidden;'
+                ):
+                    for _, row in df_l.iterrows():
+                        _legal_row(row, render_legal.refresh)
+
+            render_legal()
+
+            # ── Обработчик чекбокса include_tests ─────────────────────────
+            def on_tests_toggle():
+                include_state[0] = include_cb.value
+                iq_sel_state[0]  = None  # сброс фильтров при переключении
+                fa_sel_state[0]  = None
+                render_kpi.refresh()
+                render_iq.refresh()
+                render_fa.refresh()
+                render_hist.refresh()
+
+            include_cb.on_value_change(on_tests_toggle)

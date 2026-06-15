@@ -117,7 +117,7 @@ def build_shell(current_route: str = '/'):
         ui.html('<span class="nav-section">📊&nbsp; Аналитика и KPI</span>')
 
         _nav('🎯  Эффективность',           '/efficiency')
-        _nav('❄️  Неликвиды',               '/deadstock',  wip=True)
+        _nav('❄️  Неликвиды',               '/deadstock')
         _nav('📈  Оборачиваемость',          '/velocity',   wip=True)
         _nav('⚖️  A/B Тест: AI vs Человек',  '/abtest',     wip=True)
 

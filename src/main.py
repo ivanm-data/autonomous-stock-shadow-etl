@@ -15,6 +15,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 LOG_PATH = Path(__file__).resolve().parent.parent / 'logs' / 'nicegui.log'
 LOG_PATH.parent.mkdir(exist_ok=True)
 
+class _SuppressWinReset(logging.Filter):
+    """Фильтрует бесполезный WinError 10054 из asyncio на Windows."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return 'WinError 10054' not in msg and 'ConnectionResetError' not in msg
+
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
@@ -23,13 +29,18 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ]
 )
+
+# Заглушаем шум asyncio/uvicorn на Windows
+for _noisy in ('asyncio', 'uvicorn.error', 'uvicorn.access'):
+    logging.getLogger(_noisy).addFilter(_SuppressWinReset())
+
 logger = logging.getLogger('shadow_stock')
 logger.info('=== Autonomous Stock Shadow ETL starting ===')
 logger.info(f'Log file: {LOG_PATH}')
 
 from nicegui import ui, app
 import db
-from nice_views import stock_view, anomalies_view, receiving_view, tasks_view, efficiency_view
+from nice_views import stock_view, anomalies_view, receiving_view, tasks_view, efficiency_view, dead_stock_view
 from nice_views.shared_layout import build_shell, DARK_CSS
 
 # ─── Перехватчик необработанных исключений NiceGUI ────────────────────────────
@@ -95,7 +106,7 @@ def index():
 
         with ui.row().classes('gap-4 flex-wrap justify-center'):
             _card('leaderboard',   '#a78bfa', '🎯 Эффективность',  'KPI и SLA',            '/efficiency')
-            _card('severe_cold',   '#38bdf8', '❄️ Неликвиды',      'Мёртвый сток',          wip=True)
+            _card('severe_cold',   '#38bdf8', '❄️ Неликвиды',      'Мёртвый сток',          '/deadstock')
             _card('trending_up',   '#34d399', '📈 Оборачиваемость', 'Скорость продаж',       wip=True)
             _card('science',       '#fb923c', '⚖️ A/B Тест',        'AI vs Человек',         wip=True)
 
@@ -108,6 +119,7 @@ anomalies_view.setup_page()
 receiving_view.setup_page()
 tasks_view.setup_page()
 efficiency_view.setup_page()
+dead_stock_view.setup_page()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

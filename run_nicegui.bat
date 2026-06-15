@@ -1,11 +1,11 @@
 @echo off
 setlocal
-title Shadow Stock ERP (NiceGUI)
+title Autonomous Stock Shadow ETL (NiceGUI)
 
 color 0B
 
 echo ======================================================
-echo       SHADOW STOCK ERP  --  NICEGUI DASHBOARD
+echo   AUTONOMOUS STOCK SHADOW ETL  --  NICEGUI DASHBOARD
 echo ======================================================
 
 cd /d "%~dp0"

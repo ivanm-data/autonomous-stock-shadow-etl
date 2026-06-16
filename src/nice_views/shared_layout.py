@@ -118,7 +118,7 @@ def build_shell(current_route: str = '/'):
 
         _nav('🎯  Эффективность',           '/efficiency')
         _nav('❄️  Неликвиды',               '/deadstock')
-        _nav('📈  Оборачиваемость',          '/velocity',   wip=True)
+        _nav('📈  Оборачиваемость',          '/velocity')
         _nav('⚖️  A/B Тест: AI vs Человек',  '/abtest',     wip=True)
 
         # ── Низ сайдбара ─────────────────────────────────────────────────

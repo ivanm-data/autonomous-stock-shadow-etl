@@ -103,9 +103,11 @@ def _render_stock_row(row):
             with ui.row().classes('gap-1 flex-shrink-0'):
 
                 # 📈 Оборачиваемость
-                ui.button('📈', on_click=lambda: ui.notify(
-                    '📈 Оборачиваемость — в разработке', type='info'
-                )).props('flat size=sm').tooltip('График оборачиваемости')
+                def _go_velocity(_n=name, _s=sku):
+                    from urllib.parse import quote as _q
+                    ui.navigate.to(f'/velocity?item={_q(_n)}&sku={_q(_s)}')
+                ui.button('📈', on_click=_go_velocity) \
+                  .props('flat size=sm').tooltip('График оборачиваемости')
 
                 # ⚠️ Диалог расхождения
                 with ui.dialog() as disc_dialog, \

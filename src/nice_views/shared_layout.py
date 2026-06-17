@@ -119,7 +119,7 @@ def build_shell(current_route: str = '/'):
         _nav('🎯  Эффективность',           '/efficiency')
         _nav('❄️  Неликвиды',               '/deadstock')
         _nav('📈  Оборачиваемость',          '/velocity')
-        _nav('⚖️  A/B Тест: AI vs Человек',  '/abtest',     wip=True)
+        _nav('⚖️  A/B Тест: AI vs Человек',  '/abtest')
 
         # ── Низ сайдбара ─────────────────────────────────────────────────
         ui.separator().style('background-color: #2a2a2a; margin: 4px 0;')

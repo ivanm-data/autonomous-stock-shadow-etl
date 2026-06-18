@@ -270,6 +270,19 @@ def _render_data_health(df_inv: pd.DataFrame):
     if len(df_stats) <= 1 or df_inv.empty:
         return
 
+    # Пока парсер работает — не показываем «снятые с сайта»:
+    # товары, до которых он ещё не дошёл, имеют вчерашнюю дату и
+    # ошибочно попадают в список (может быть тысячи позиций → зависание).
+    if is_running:
+        with ui.card().classes('w-full p-3 mt-2').style(
+            'background:#1c1917; border:1px solid #a16207;'
+        ):
+            ui.label(
+                '⏳ Парсер работает — список «Снятых с сайта» временно скрыт. '
+                'Проверка будет доступна после завершения сбора данных.'
+            ).classes('text-amber-300 text-sm')
+        return
+
     yesterday_date = df_stats.iloc[1]['parse_date']
     lost_items     = df_inv[
         (df_inv['last_seen_date'] == yesterday_date) & (~df_inv['actual'])
@@ -418,6 +431,17 @@ def setup_page():
             actual_count  = int(df_inv['actual'].sum()) if 'actual' in df_inv.columns else len(df_inv)
             total_count   = len(df_inv)
             removed_count = total_count - actual_count
+            parser_now    = _is_parser_running()
+
+            if parser_now:
+                with ui.card().classes('w-full p-3').style(
+                    'background:#1c1917; border:1px solid #a16207;'
+                ):
+                    ui.label(
+                        '🔄 Парсер сейчас работает. Данные обновляются в реальном времени. '
+                        'Метрика «Снято с сайта» и список исчезнувших товаров будут '
+                        'доступны после завершения сбора.'
+                    ).classes('text-amber-300 text-sm')
 
             with ui.row().classes('gap-4 flex-wrap'):
                 def _stat(label, value, color):
@@ -427,10 +451,11 @@ def setup_page():
                         ui.label(str(value)).classes('text-white text-2xl font-bold')
                         ui.label(label).style('color:#9ca3af; font-size:0.8rem;')
 
-                _stat('Всего позиций',   total_count,   '#60a5fa')
-                _stat('Активных',        actual_count,  '#34d399')
-                _stat('Снято с сайта',   removed_count, '#f87171')
-                _stat('Дата обновления', latest_date,   '#a78bfa')
+                _stat('Всего позиций',   total_count,                        '#60a5fa')
+                _stat('Активных',        actual_count,                       '#34d399')
+                _stat('Снято с сайта',   '…' if parser_now else removed_count, '#f87171')
+                _stat('Дата обновления', latest_date,                        '#a78bfa')
+
 
             ui.separator().style('background:#2a2a2a;')
 

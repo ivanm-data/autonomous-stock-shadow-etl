@@ -80,15 +80,6 @@ def build_shell(current_route: str = '/'):
         'background-color: #111111;'
     ) as drawer:
 
-        # Бренд
-        with ui.row().classes('items-center px-4 py-4 gap-2'):
-            ui.icon('diamond', size='22px').style('color: #60a5fa;')
-            with ui.column().classes('gap-0'):
-                ui.label('Autonomous Stock').classes('text-white font-bold leading-tight').style('font-size:0.85rem;')
-                ui.label('Shadow ETL').style('color: #9ca3af; font-size: 0.72rem;')
-
-        ui.separator().style('background-color: #2a2a2a; margin: 0;')
-
         # ── Секция: ОПЕРАЦИИ ─────────────────────────────────────────────
         ui.html('<span class="nav-section">🛠&nbsp; Операции</span>')
 

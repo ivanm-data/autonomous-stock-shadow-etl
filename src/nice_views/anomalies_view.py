@@ -4,7 +4,7 @@ anomalies_view.py — NiceGUI-версия вкладки аномалий.
 import logging
 logger = logging.getLogger('shadow_stock.anomalies')
 
-from nicegui import ui
+from nicegui import ui, run as ng_run
 import pandas as pd
 import re
 import difflib

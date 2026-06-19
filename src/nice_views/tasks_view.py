@@ -2,7 +2,7 @@
 tasks_view.py — NiceGUI-версия вкладки Задачи.
 Полный перенос функционала из src/views/tasks_view.py.
 """
-from nicegui import ui
+from nicegui import ui, run as ng_run
 import sys
 import os
 import logging
@@ -48,7 +48,7 @@ def _metric(label: str, value: str, color: str, delta: int | None = None):
 def setup_page():
 
     @ui.page('/tasks')
-    def tasks_page():
+    async def tasks_page():
         logger.info('tasks_page() handler entered')
         build_shell('/tasks')
 
@@ -64,8 +64,9 @@ def setup_page():
             ui.separator().style('background:#2a2a2a;')
 
             @ui.refreshable
-            def render_tasks():
-                df_tasks = db.load_anomaly_report('Открыта')
+            async def render_tasks():
+                # A1: загрузка вне event loop
+                df_tasks = await ng_run.io_bound(db.load_anomaly_report, 'Открыта')
 
                 # ── Нет задач ─────────────────────────────────────────────
                 if df_tasks.empty:
@@ -79,8 +80,8 @@ def setup_page():
                         ui.label('Новых расхождений нет.').style('color:#6b7280;')
                     return
 
-                # Загружаем текущие остатки для сравнения
-                latest_inv = db.load_inventory()
+                # Загружаем текущие остатки для сравнения (A1)
+                latest_inv = await ng_run.io_bound(db.load_inventory)
 
                 ui.label(f'Открытых задач: {len(df_tasks)}').style(
                     'color:#f97316; font-size:0.85rem; font-weight:600;'

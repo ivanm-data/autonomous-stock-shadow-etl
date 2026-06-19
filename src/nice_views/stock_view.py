@@ -2,9 +2,10 @@
 stock_view.py — NiceGUI-версия вкладки склада.
 Полный перенос функционала из src/views/stock_view.py.
 """
-from nicegui import ui
+from nicegui import ui, run as ng_run
 import sys
 import os
+import time
 import psutil
 import logging
 from pathlib import Path
@@ -34,7 +35,13 @@ def _open_tasks_count() -> int:
         return 0
 
 
-def _is_parser_running() -> bool:
+# ── C1: TTL-кэш для psutil (10 сек.) ────────────────────────────────────────
+_PARSER_CACHE: dict = {'result': False, 'ts': 0.0}
+_PARSER_TTL = 10.0  # секунд
+
+
+def _scan_parser_processes() -> bool:
+    """Сканирует процессы ОС (дорогая операция, вызывается только при устаревшем кэше)."""
     for proc in psutil.process_iter(['cmdline']):
         try:
             cmd = proc.info.get('cmdline') or []
@@ -43,6 +50,16 @@ def _is_parser_running() -> bool:
         except Exception:
             pass
     return False
+
+
+def _is_parser_running() -> bool:
+    """Возвращает статус парсера с TTL-кэшем 10 сек. — не вызывает psutil лишний раз."""
+    now = time.monotonic()
+    if now - _PARSER_CACHE['ts'] < _PARSER_TTL:
+        return _PARSER_CACHE['result']
+    result = _scan_parser_processes()
+    _PARSER_CACHE.update({'result': result, 'ts': now})
+    return result
 
 
 def _get_parser_stats() -> pd.DataFrame:
@@ -182,12 +199,19 @@ def _render_stock_row(row):
 #  Компонент: Data Health Monitor
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _render_data_health(df_inv: pd.DataFrame):
+def _render_data_health(
+    df_inv: pd.DataFrame,
+    df_stats: pd.DataFrame,
+    is_running: bool,
+):
+    """
+    Рендерит блок «Data Health».
+    df_stats и is_running принимаются снаружи (уже загружены async),
+    чтобы не дублировать дорогие вызовы psutil и SQLite.
+    """
     ui.label('🤖 Мониторинг парсера (Data Health)').classes(
         'text-white text-xl font-bold mt-2'
     )
-
-    df_stats = _get_parser_stats()
 
     if df_stats.empty:
         with ui.card().classes('w-full p-4').style(
@@ -216,7 +240,7 @@ def _render_data_health(df_inv: pd.DataFrame):
     except Exception:
         dur_text = 'н/д'
 
-    is_running = _is_parser_running()
+    # is_running уже передан снаружи — не вызываем psutil повторно
 
     # ── Метрики ──────────────────────────────────────────────────────────
     with ui.row().classes('gap-4 flex-wrap'):
@@ -364,12 +388,16 @@ def _render_data_health(df_inv: pd.DataFrame):
 def setup_page():
 
     @ui.page('/stock')
-    def stock_page():
+    async def stock_page():
         logger.info('stock_page() handler entered')
         build_shell('/stock')
 
-        df_inv  = db.load_inventory()
-        df_anom = db.load_anomalies()
+        # A1: все блокирующие IO-операции выполняются вне event loop
+        df_inv     = await ng_run.io_bound(db.load_inventory)
+        df_anom    = await ng_run.io_bound(db.load_anomalies)
+        open_tasks = await ng_run.io_bound(_open_tasks_count)
+        parser_now = await ng_run.io_bound(_is_parser_running)  # один вызов psutil
+        df_stats   = await ng_run.io_bound(_get_parser_stats)
 
         with ui.column().classes('w-full p-4 gap-4').style(
             'background:#0d0d0d; min-height:100vh;'
@@ -377,7 +405,6 @@ def setup_page():
 
             # ── Умные баннеры ─────────────────────────────────────────────
             active_anom = len(df_anom) if not df_anom.empty else 0
-            open_tasks  = _open_tasks_count()
 
             if active_anom > 0:
                 with ui.card().classes('w-full cursor-pointer').style(
@@ -393,7 +420,7 @@ def setup_page():
             if open_tasks > 0:
                 with ui.card().classes('w-full cursor-pointer').style(
                     'background:#422006; border:1px solid #f97316;'
-                ).on('click', lambda: ui.notify('🚧 Задачи — в разработке', type='info')):
+                ).on('click', lambda: ui.navigate.to('/tasks')):
                     with ui.row().classes('items-center gap-3 p-2'):
                         ui.icon('local_fire_department', size='24px').style('color:#f97316;')
                         ui.label(
@@ -426,12 +453,11 @@ def setup_page():
                     )
                 return
 
-            # ── Метрики ───────────────────────────────────────────────────
+            # ── Метрики (parser_now уже получен async выше) ──────────────
             latest_date   = df_inv['last_seen_date'].max() if 'last_seen_date' in df_inv.columns else '—'
             actual_count  = int(df_inv['actual'].sum()) if 'actual' in df_inv.columns else len(df_inv)
             total_count   = len(df_inv)
             removed_count = total_count - actual_count
-            parser_now    = _is_parser_running()
 
             if parser_now:
                 with ui.card().classes('w-full p-3').style(
@@ -553,5 +579,5 @@ def setup_page():
 
             ui.separator().style('background:#2a2a2a;')
 
-            # ── Data Health ───────────────────────────────────────────────
-            _render_data_health(df_inv)
+            # ── Data Health (df_stats и parser_now переданы из async-загрузки) ──
+            _render_data_health(df_inv, df_stats, parser_now)

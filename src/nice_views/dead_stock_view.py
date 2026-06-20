@@ -2,7 +2,7 @@
 dead_stock_view.py — NiceGUI-версия вкладки «Неликвиды».
 Полный перенос функционала из src/views/dead_stock_view.py.
 """
-from nicegui import ui
+from nicegui import ui, run as ng_run
 import sys
 import os
 import base64
@@ -56,7 +56,7 @@ def _download_csv(df: pd.DataFrame) -> None:
 def setup_page():
 
     @ui.page('/deadstock')
-    def deadstock_page():
+    async def deadstock_page():
         logger.info('deadstock_page() handler entered')
         build_shell('/deadstock')
 
@@ -68,7 +68,7 @@ def setup_page():
             )
             ui.separator().style('background:#2a2a2a;')
 
-            df_all, frozen = _frozen_df()
+            df_all, frozen = await ng_run.io_bound(_frozen_df)
 
             # ── Нет данных ────────────────────────────────────────────────
             if df_all.empty or frozen.empty:

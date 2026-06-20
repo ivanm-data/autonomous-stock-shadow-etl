@@ -197,7 +197,7 @@ def _fmt_rub(val) -> str:
 def setup_page():
 
     @ui.page('/abtest')
-    def abtest_page():
+    async def abtest_page():
         logger.info('abtest_page() handler entered')
         build_shell('/abtest')
 
@@ -220,10 +220,10 @@ def setup_page():
             # Основной refreshable
             # ══════════════════════════════════════════════════════════════
             @ui.refreshable
-            def render_main():
+            async def render_main():
 
                 # ── Cold Start индикатор ───────────────────────────────────
-                days = _days_in_db()
+                days = await ng_run.io_bound(_days_in_db)
                 if days < 30:
                     with ui.card().classes('w-full p-4').style(
                         'background:#1c1917; border:1px solid #a16207;'
@@ -243,8 +243,8 @@ def setup_page():
                         ).classes('text-green-400 text-sm')
 
                 # ── Обновляем статусы прогнозов ───────────────────────────
-                _verify_shadow_forecasts()
-                df_fc = _load_forecasts()
+                await ng_run.io_bound(_verify_shadow_forecasts)
+                df_fc = await ng_run.io_bound(_load_forecasts)
 
                 # ── Нет прогнозов ─────────────────────────────────────────
                 if df_fc.empty:

@@ -67,7 +67,7 @@ def setup_page():
     logger.info('anomalies_view.setup_page() called')
 
     @ui.page('/anomalies')
-    def anomalies_page():
+    async def anomalies_page():
         logger.info('anomalies_page() handler entered')
 
         dismissed: list[str] = []
@@ -77,10 +77,17 @@ def setup_page():
 
         # ── refreshable внутри страницы — per-client ─────────────────────────
         @ui.refreshable
-        def render_anomalies():
+        async def render_anomalies():
             logger.info('render_anomalies() called')
             try:
-                _render_content(dismissed, render_anomalies)
+                # A1: выносим всю загрузку данных вне event loop
+                expected_df, df_anomalies, df_inv = await ng_run.io_bound(
+                    _load_anomaly_data
+                )
+                _render_content(
+                    expected_df, df_anomalies, df_inv,
+                    dismissed, render_anomalies,
+                )
                 logger.info('render_anomalies() completed OK')
             except Exception as e:
                 logger.exception('EXCEPTION inside render_anomalies')
@@ -102,10 +109,8 @@ def setup_page():
 #  Основной контент (вызывается из render_anomalies через try/except)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _render_content(dismissed: list, refresh_fn):
-
-    # 1. Загружаем данные
-    logger.info('_render_content: step 1 - loading expected_deliveries')
+def _load_anomaly_data() -> tuple:
+    """A1: загружает все данные. Вызывается через run.io_bound, не создаёт UI-элементов."""
     with db.get_connection() as conn:
         try:
             expected_df = pd.read_sql_query(
@@ -113,14 +118,18 @@ def _render_content(dismissed: list, refresh_fn):
             )
         except Exception:
             expected_df = pd.DataFrame()
-
-    logger.info('_render_content: step 2 - calling db.load_anomalies()')
     df_anomalies = db.load_anomalies()
-    logger.info(f'_render_content: load_anomalies done, shape={df_anomalies.shape}')
-    logger.info('_render_content: step 3 - calling db.load_inventory()')
     df_inv       = db.load_inventory()
-    logger.info(f'_render_content: load_inventory done, shape={df_inv.shape}')
+    return expected_df, df_anomalies, df_inv
 
+
+def _render_content(
+    expected_df: pd.DataFrame,
+    df_anomalies: pd.DataFrame,
+    df_inv: pd.DataFrame,
+    dismissed: list,
+    refresh_fn,
+):
     active_anom = (
         df_anomalies[~df_anomalies['Наименование'].isin(dismissed)]
         if not df_anomalies.empty else pd.DataFrame()

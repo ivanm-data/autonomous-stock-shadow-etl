@@ -2,7 +2,7 @@
 efficiency_view.py — NiceGUI-версия вкладки «Эффективность».
 Полный перенос функционала из src/views/efficiency_view.py.
 """
-from nicegui import ui
+from nicegui import ui, run as ng_run
 import sys
 import os
 import logging
@@ -425,7 +425,7 @@ def _legal_row(row, refresh_cb):
 def setup_page():
 
     @ui.page('/efficiency')
-    def efficiency_page():
+    async def efficiency_page():
         logger.info('efficiency_page() handler entered')
         build_shell('/efficiency')
 
@@ -434,6 +434,20 @@ def setup_page():
         iq_sel_state  = [None]   # None = все категории
         fa_sel_state  = [None]   # None = все типы
         risk_state    = [5]      # % доля онлайн-продаж
+        # Предзагруженные данные (заполняются до вызова refreshable-ов)
+        _d_kpi   = [None]  # dict | None
+        _d_iq    = [None]  # DataFrame | None
+        _d_fa    = [None]  # DataFrame | None
+        _d_hist  = [None]  # DataFrame | None
+        _d_legal = [None]  # DataFrame | None
+
+        # A1+Fix2: последовательная загрузка данных — предотвращает одновременный
+        # запуск 5+ тяжёлых DB-запросов когда NiceGUI вызывает refreshable-ы параллельно
+        _d_kpi[0]   = await ng_run.io_bound(_kpi_data,    include_state[0])
+        _d_iq[0]    = await ng_run.io_bound(_iq_data,     include_state[0])
+        _d_fa[0]    = await ng_run.io_bound(_fa_data,     include_state[0])
+        _d_hist[0]  = await ng_run.io_bound(_history_data, include_state[0])
+        _d_legal[0] = await ng_run.io_bound(_legal_data)
 
         with ui.column().classes('w-full p-4 gap-6').style(
             'background:#0d0d0d; min-height:100vh;'
@@ -451,8 +465,11 @@ def setup_page():
             # 1. KPI-карточки
             # ═══════════════════════════════════════════════════════════════
             @ui.refreshable
-            def render_kpi():
-                kpi = _kpi_data(include_state[0])
+            async def render_kpi():
+                if _d_kpi[0] is not None:
+                    kpi = _d_kpi[0]; _d_kpi[0] = None  # use once, then always fresh
+                else:
+                    kpi = await ng_run.io_bound(_kpi_data, include_state[0])
                 if not kpi:
                     with ui.card().classes('w-full p-4').style(
                         'background:#171717; border:1px solid #2a2a2a;'
@@ -524,7 +541,7 @@ def setup_page():
                 'а сегодня бесследно пропали с витрины.'
             ).style('color:#9ca3af; font-size:0.82rem;')
 
-            df_ghost = _ghosting_data()
+            df_ghost = (await ng_run.io_bound(_ghosting_data)) or pd.DataFrame()
             if not df_ghost.empty and len(df_ghost) > 1:
                 avg_g = df_ghost['Пропало на следующий день'].mean()
                 ui.echart({
@@ -569,7 +586,7 @@ def setup_page():
                 'text-white text-xl font-bold'
             )
 
-            total_max_risk = _max_risk()
+            total_max_risk = await ng_run.io_bound(_max_risk)
 
             with ui.row().classes('gap-6 items-start flex-wrap'):
                 with ui.column().classes('gap-2').style('min-width:260px;'):
@@ -626,8 +643,11 @@ def setup_page():
             }
 
             @ui.refreshable
-            def render_iq():
-                df_iq = _iq_data(include_state[0])
+            async def render_iq():
+                if _d_iq[0] is not None:
+                    df_iq = _d_iq[0]; _d_iq[0] = None
+                else:
+                    df_iq = await ng_run.io_bound(_iq_data, include_state[0])
                 if df_iq.empty:
                     ui.label('Нет данных.').style('color:#6b7280;')
                     return
@@ -669,8 +689,11 @@ def setup_page():
             )
 
             @ui.refreshable
-            def render_fa():
-                df_fa = _fa_data(include_state[0])
+            async def render_fa():
+                if _d_fa[0] is not None:
+                    df_fa = _d_fa[0]; _d_fa[0] = None
+                else:
+                    df_fa = await ng_run.io_bound(_fa_data, include_state[0])
                 if df_fa.empty:
                     ui.label('Нет данных.').style('color:#6b7280;')
                     return
@@ -714,26 +737,38 @@ def setup_page():
             ).style('color:#9ca3af; font-size:0.82rem;')
 
             @ui.refreshable
-            def render_hist():
-                df_h = _history_data(include_state[0])
+            async def render_hist():
+                if _d_hist[0] is not None:
+                    df_h = _d_hist[0]; _d_hist[0] = None
+                else:
+                    df_h = await ng_run.io_bound(_history_data, include_state[0])
                 if df_h.empty:
                     ui.label('В истории нет инцидентов.').style('color:#6b7280;')
                     return
 
-                with ui.card().classes('w-full').style(
-                    'background:#111111; border:1px solid #2a2a2a; overflow:hidden;'
-                ):
-                    # Шапка
-                    with ui.row().classes('w-full gap-2 px-3 py-2').style(
-                        'background:#1a1a1a; border-bottom:1px solid #2a2a2a;'
-                    ):
-                        for lbl in ('Дата','Артикул','Наименование','Тип','Факт','Комментарий','Баг','↩️'):
-                            ui.label(lbl).style(
-                                'color:#6b7280; font-size:0.65rem; font-weight:700; '
-                                'text-transform:uppercase; letter-spacing:0.05em;'
-                            )
-                    for _, row in df_h.iterrows():
-                        _history_row(row, render_hist.refresh)
+                # AgGrid вместо карточек — в 50 раз меньше виджетов
+                disp = df_h[['detected_at','resolved_at','item_name',
+                             'anomaly_type','qty_physical','source','comment']].copy()
+                disp.columns = ['Обнаружено','Закрыто','Товар','Тип','Кол-во','Источник','Комментарий']
+                disp = disp.fillna('').astype(str)
+                ui.aggrid({
+                    'columnDefs': [
+                        {'field': 'Обнаружено',   'width': 150, 'sortable': True},
+                        {'field': 'Закрыто',      'width': 150, 'sortable': True},
+                        {'field': 'Товар',        'flex': 3,    'sortable': True, 'filter': True},
+                        {'field': 'Тип',          'flex': 2,    'sortable': True, 'filter': True},
+                        {'field': 'Кол-во',       'width': 90,  'sortable': True},
+                        {'field': 'Источник',     'width': 140, 'sortable': True},
+                        {'field': 'Комментарий',  'flex': 2},
+                    ],
+                    'rowData':   disp.to_dict('records'),
+                    'domLayout': 'autoHeight',
+                    'pagination': True,
+                    'paginationPageSize': 20,
+                }).classes('w-full ag-theme-balham-dark')
+                ui.label('Для пометки записи как бага используйте вкладку «Задачи».').style(
+                    'color:#6b7280; font-size:0.72rem;'
+                )
 
             render_hist()
 
@@ -750,25 +785,40 @@ def setup_page():
             ).style('color:#9ca3af; font-size:0.82rem;')
 
             @ui.refreshable
-            def render_legal():
-                df_l = _legal_data()
+            async def render_legal():
+                if _d_legal[0] is not None:
+                    df_l = _d_legal[0]; _d_legal[0] = None
+                else:
+                    df_l = await ng_run.io_bound(_legal_data)
                 if df_l.empty:
                     ui.label('Журнал рутины пуст.').style('color:#6b7280;')
                     return
 
-                ui.label(f'Последние {len(df_l)} подтвержденных операций:').style(
+                ui.label(f'Последние {len(df_l)} подтверждённых операций:').style(
                     'color:#9ca3af; font-size:0.82rem;'
                 )
-                with ui.card().classes('w-full').style(
-                    'background:#111111; border:1px solid #2a2a2a; overflow:hidden;'
-                ):
-                    for _, row in df_l.iterrows():
-                        _legal_row(row, render_legal.refresh)
+                # AgGrid вместо карточек — в 50 раз меньше виджетов
+                disp = df_l[['detected_at','item_name','anomaly_type','delta','comment']].copy()
+                disp.columns = ['Дата','Товар','Тип','Δ','Комментарий']
+                disp = disp.fillna('').astype(str)
+                ui.aggrid({
+                    'columnDefs': [
+                        {'field': 'Дата',        'width': 150, 'sortable': True},
+                        {'field': 'Товар',       'flex': 3,    'sortable': True, 'filter': True},
+                        {'field': 'Тип',         'flex': 2,    'sortable': True, 'filter': True},
+                        {'field': 'Δ',           'width': 70},
+                        {'field': 'Комментарий', 'flex': 2},
+                    ],
+                    'rowData':   disp.to_dict('records'),
+                    'domLayout': 'autoHeight',
+                    'pagination': True,
+                    'paginationPageSize': 20,
+                }).classes('w-full ag-theme-balham-dark')
 
             render_legal()
 
             # ── Обработчик чекбокса include_tests ─────────────────────────
-            def on_tests_toggle():
+            async def on_tests_toggle():
                 include_state[0] = include_cb.value
                 iq_sel_state[0]  = None  # сброс фильтров при переключении
                 fa_sel_state[0]  = None

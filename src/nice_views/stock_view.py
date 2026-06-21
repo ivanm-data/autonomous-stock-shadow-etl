@@ -413,7 +413,7 @@ def setup_page():
                     with ui.row().classes('items-center gap-3 p-2'):
                         ui.icon('warning', size='24px').style('color:#ef4444;')
                         ui.label(
-                            f'🚨 НОВЫЕ СКАЧКИ ОСТАТКОВ ({active_anom})! '
+                            f'\U0001f6a8 НОВЫЕ СКАЧКИ ОСТАТКОВ ({active_anom})! '
                             f'Нажмите для распределения'
                         ).classes('text-white font-bold')
 
@@ -424,7 +424,7 @@ def setup_page():
                     with ui.row().classes('items-center gap-3 p-2'):
                         ui.icon('local_fire_department', size='24px').style('color:#f97316;')
                         ui.label(
-                            f'🔥 НЕЗАКРЫТЫЕ ЗАДАЧИ ({open_tasks})! '
+                            f'\U0001f525 НЕЗАКРЫТЫЕ ЗАДАЧИ ({open_tasks})! '
                             f'Нажмите для проверки на полке'
                         ).classes('text-white font-bold')
 
@@ -437,7 +437,7 @@ def setup_page():
                     'background:#1e1b4b; border:1px solid #818cf8;'
                 ):
                     ui.label(
-                        '⚠️ ИИ ожидает запуска: есть свежие данные без анализа. '
+                        '\u26a0\ufe0f ИИ ожидает запуска: есть свежие данные без анализа. '
                         'Перейдите на вкладку A/B Тест.'
                     ).classes('text-indigo-200 text-sm')
 
@@ -448,12 +448,12 @@ def setup_page():
                 with ui.card().classes('w-full p-4').style(
                     'background:#171717; border:1px solid #ef4444;'
                 ):
-                    ui.label('⚠️ База данных пуста или файл не найден.').classes(
+                    ui.label('\u26a0\ufe0f База данных пуста или файл не найден.').classes(
                         'text-red-400 text-lg'
                     )
                 return
 
-            # ── Метрики (parser_now уже получен async выше) ──────────────
+            # ── Метрики ───────────────────────────────────────────────────
             latest_date   = df_inv['last_seen_date'].max() if 'last_seen_date' in df_inv.columns else '—'
             actual_count  = int(df_inv['actual'].sum()) if 'actual' in df_inv.columns else len(df_inv)
             total_count   = len(df_inv)
@@ -464,9 +464,8 @@ def setup_page():
                     'background:#1c1917; border:1px solid #a16207;'
                 ):
                     ui.label(
-                        '🔄 Парсер сейчас работает. Данные обновляются в реальном времени. '
-                        'Метрика «Снято с сайта» и список исчезнувших товаров будут '
-                        'доступны после завершения сбора.'
+                        '\U0001f504 Парсер сейчас работает. Данные обновляются в реальном времени. '
+                        'Список исчезнувших товаров будет доступен после завершения сбора.'
                     ).classes('text-amber-300 text-sm')
 
             with ui.row().classes('gap-4 flex-wrap'):
@@ -477,16 +476,23 @@ def setup_page():
                         ui.label(str(value)).classes('text-white text-2xl font-bold')
                         ui.label(label).style('color:#9ca3af; font-size:0.8rem;')
 
-                _stat('Всего позиций',   total_count,                        '#60a5fa')
-                _stat('Активных',        actual_count,                       '#34d399')
-                _stat('Снято с сайта',   '…' if parser_now else removed_count, '#f87171')
-                _stat('Дата обновления', latest_date,                        '#a78bfa')
-
+                _stat('Всего позиций',   total_count,                          '#60a5fa')
+                _stat('Активных',        actual_count,                         '#34d399')
+                _stat('Снято с сайта',   '...' if parser_now else removed_count, '#f87171')
+                _stat('Дата обновления', latest_date,                          '#a78bfa')
 
             ui.separator().style('background:#2a2a2a;')
 
-            # ── Основная таблица ──────────────────────────────────────────
-            ui.label('📦 Актуальные остатки').classes('text-white text-xl font-bold')
+            # ── Data Health (сразу после метрик) ─────────────────────────
+            _render_data_health(df_inv, df_stats, parser_now)
+
+            ui.separator().style('background:#2a2a2a;')
+
+            # ── Поиск по складу ───────────────────────────────────────────
+            ui.label('\U0001f50d Поиск по складу').classes('text-white text-xl font-bold')
+            ui.label(
+                'Введите артикул или часть названия товара.'
+            ).style('color:#9ca3af; font-size:0.82rem;')
 
             exclude_cols = {'_search_index', 'actual', 'ID'}
             col_defs = []
@@ -498,29 +504,10 @@ def setup_page():
                     'sortable': True, 'filter': True,
                     'resizable': True, 'floatingFilter': True,
                 }
-                if col == 'Артикул':      cdef['width'] = 130
-                elif col == 'Наименование': cdef['flex'] = 3
+                if col == 'Артикул':          cdef['width'] = 130
+                elif col == 'Наименование':   cdef['flex']  = 3
                 elif col in ('Цена', 'Остаток'): cdef['width'] = 100
                 col_defs.append(cdef)
-
-            rows = df_inv.drop(
-                columns=[c for c in exclude_cols if c in df_inv.columns]
-            ).to_dict('records')
-
-            ui.aggrid({
-                'columnDefs':          col_defs,
-                'rowData':             rows,
-                'rowSelection':        'single',
-                'pagination':          True,
-                'paginationPageSize':  100,
-                'defaultColDef':       {'minWidth': 80, 'flex': 1},
-                'domLayout':           'autoHeight',
-            }).classes('w-full ag-theme-balham-dark')
-
-            ui.separator().style('background:#2a2a2a;')
-
-            # ── Быстрый поиск ─────────────────────────────────────────────
-            ui.label('🔍 Быстрый поиск').classes('text-white text-xl font-bold')
 
             search_val = ['']
 
@@ -528,12 +515,16 @@ def setup_page():
             def render_search_results():
                 query = search_val[0].strip()
                 if not query:
-                    ui.label('👆 Введите артикул или название для поиска.').style(
-                        'color:#9ca3af;'
-                    )
+                    with ui.card().classes('w-full p-4').style(
+                        'background:#111111; border:1px solid #2a2a2a;'
+                    ):
+                        ui.label(
+                            '\U0001f446 Введите артикул или название чтобы найти товар. '
+                            'Полная таблица доступна ниже.'
+                        ).style('color:#9ca3af;')
                     return
 
-                words = query.lower().replace('ё', 'е').split()
+                words = query.lower().replace('\u0451', '\u0435').split()
                 mask  = pd.Series(True, index=df_inv.index)
                 for w in words:
                     if '_search_index' in df_inv.columns:
@@ -548,7 +539,6 @@ def setup_page():
                 ui.label(f'Найдено: {count}').style('color:#9ca3af; font-size:0.85rem;')
 
                 if count > 50:
-                    # Много результатов — показываем AgGrid
                     sub_rows = f_df.drop(
                         columns=[c for c in exclude_cols if c in f_df.columns]
                     ).to_dict('records')
@@ -562,7 +552,6 @@ def setup_page():
                     }).classes('w-full ag-theme-balham-dark')
                     return
 
-                # ≤50 результатов — интерактивные строки с кнопками
                 with ui.column().classes('w-full gap-2'):
                     for _, srow in f_df.iterrows():
                         _render_stock_row(srow)
@@ -571,13 +560,29 @@ def setup_page():
                 search_val[0] = e.value
                 render_search_results.refresh()
 
-            ui.input(placeholder='🔍 Артикул или название...').classes('w-full').style(
-                'color:white;'
-            ).on_value_change(_on_search)
+            ui.input(placeholder='\U0001f50d Артикул или название...').classes('w-full').on_value_change(_on_search)
 
             render_search_results()
 
             ui.separator().style('background:#2a2a2a;')
 
-            # ── Data Health (df_stats и parser_now переданы из async-загрузки) ──
-            _render_data_health(df_inv, df_stats, parser_now)
+            # ── Полная таблица (коллапс, не грузится при открытии страницы) ─
+            with ui.expansion(
+                f'\U0001f4e6 Вся таблица остатков ({total_count} поз.) — нажмите чтобы раскрыть',
+                value=False,
+            ).classes('w-full').style(
+                'background:#111111; border:1px solid #2a2a2a; border-radius:8px;'
+            ):
+                rows = df_inv.drop(
+                    columns=[c for c in exclude_cols if c in df_inv.columns]
+                ).to_dict('records')
+
+                ui.aggrid({
+                    'columnDefs':          col_defs,
+                    'rowData':             rows,
+                    'rowSelection':        'single',
+                    'pagination':          True,
+                    'paginationPageSize':  100,
+                    'defaultColDef':       {'minWidth': 80, 'flex': 1},
+                    'domLayout':           'autoHeight',
+                }).classes('w-full ag-theme-balham-dark')

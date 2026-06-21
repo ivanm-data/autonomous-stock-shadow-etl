@@ -77,13 +77,10 @@ def setup_page():
 
         # ── refreshable внутри страницы — per-client ─────────────────────────
         @ui.refreshable
-        async def render_anomalies():
+        def render_anomalies():
             logger.info('render_anomalies() called')
             try:
-                # A1: выносим всю загрузку данных вне event loop
-                expected_df, df_anomalies, df_inv = await ng_run.io_bound(
-                    _load_anomaly_data
-                )
+                expected_df, df_anomalies, df_inv = _load_anomaly_data()
                 _render_content(
                     expected_df, df_anomalies, df_inv,
                     dismissed, render_anomalies,

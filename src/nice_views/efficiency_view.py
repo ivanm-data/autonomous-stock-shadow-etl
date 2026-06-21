@@ -465,11 +465,11 @@ def setup_page():
             # 1. KPI-карточки
             # ═══════════════════════════════════════════════════════════════
             @ui.refreshable
-            async def render_kpi():
+            def render_kpi():
                 if _d_kpi[0] is not None:
-                    kpi = _d_kpi[0]; _d_kpi[0] = None  # use once, then always fresh
+                    kpi = _d_kpi[0]; _d_kpi[0] = None
                 else:
-                    kpi = await ng_run.io_bound(_kpi_data, include_state[0])
+                    kpi = _kpi_data(include_state[0])
                 if not kpi:
                     with ui.card().classes('w-full p-4').style(
                         'background:#171717; border:1px solid #2a2a2a;'
@@ -643,11 +643,11 @@ def setup_page():
             }
 
             @ui.refreshable
-            async def render_iq():
+            def render_iq():
                 if _d_iq[0] is not None:
                     df_iq = _d_iq[0]; _d_iq[0] = None
                 else:
-                    df_iq = await ng_run.io_bound(_iq_data, include_state[0])
+                    df_iq = _iq_data(include_state[0])
                 if df_iq.empty:
                     ui.label('Нет данных.').style('color:#6b7280;')
                     return
@@ -689,11 +689,11 @@ def setup_page():
             )
 
             @ui.refreshable
-            async def render_fa():
+            def render_fa():
                 if _d_fa[0] is not None:
                     df_fa = _d_fa[0]; _d_fa[0] = None
                 else:
-                    df_fa = await ng_run.io_bound(_fa_data, include_state[0])
+                    df_fa = _fa_data(include_state[0])
                 if df_fa.empty:
                     ui.label('Нет данных.').style('color:#6b7280;')
                     return
@@ -737,11 +737,11 @@ def setup_page():
             ).style('color:#9ca3af; font-size:0.82rem;')
 
             @ui.refreshable
-            async def render_hist():
+            def render_hist():
                 if _d_hist[0] is not None:
                     df_h = _d_hist[0]; _d_hist[0] = None
                 else:
-                    df_h = await ng_run.io_bound(_history_data, include_state[0])
+                    df_h = _history_data(include_state[0])
                 if df_h.empty:
                     ui.label('В истории нет инцидентов.').style('color:#6b7280;')
                     return
@@ -785,11 +785,11 @@ def setup_page():
             ).style('color:#9ca3af; font-size:0.82rem;')
 
             @ui.refreshable
-            async def render_legal():
+            def render_legal():
                 if _d_legal[0] is not None:
                     df_l = _d_legal[0]; _d_legal[0] = None
                 else:
-                    df_l = await ng_run.io_bound(_legal_data)
+                    df_l = _legal_data()
                 if df_l.empty:
                     ui.label('Журнал рутины пуст.').style('color:#6b7280;')
                     return

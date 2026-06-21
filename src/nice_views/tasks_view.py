@@ -64,9 +64,8 @@ def setup_page():
             ui.separator().style('background:#2a2a2a;')
 
             @ui.refreshable
-            async def render_tasks():
-                # A1: загрузка вне event loop
-                df_tasks = await ng_run.io_bound(db.load_anomaly_report, 'Открыта')
+            def render_tasks():
+                df_tasks = db.load_anomaly_report('Открыта')
 
                 # ── Нет задач ─────────────────────────────────────────────
                 if df_tasks.empty:
@@ -80,8 +79,8 @@ def setup_page():
                         ui.label('Новых расхождений нет.').style('color:#6b7280;')
                     return
 
-                # Загружаем текущие остатки для сравнения (A1)
-                latest_inv = await ng_run.io_bound(db.load_inventory)
+                # Загружаем текущие остатки для сравнения
+                latest_inv = db.load_inventory()
 
                 ui.label(f'Открытых задач: {len(df_tasks)}').style(
                     'color:#f97316; font-size:0.85rem; font-weight:600;'

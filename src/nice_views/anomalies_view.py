@@ -179,9 +179,10 @@ def _render_content(
 
     # 4. Нет аномалий — успех
     if active_anom.empty:
-        with ui.card().classes('w-full p-6 bg-green-50 items-center gap-3'):
-            ui.icon('check_circle', size='48px').classes('text-green-500')
-            ui.label('Аномалий нет. 🎉').classes('text-xl font-semibold text-green-700')
+        with ui.card().classes('w-full p-6').style('background:#052e16; border:1px solid #22c55e;'):
+            with ui.row().classes('items-center gap-3'):
+                ui.icon('check_circle', size='48px').style('color:#22c55e;')
+                ui.label('Аномалий нет. 🎉').classes('text-green-400 text-xl font-semibold')
         return
 
     # 5. Пагинация — рисуем не более PAGE_SIZE карточек за раз
@@ -190,13 +191,44 @@ def _render_content(
     page_anom = active_anom.head(PAGE_SIZE)
 
     if total > PAGE_SIZE:
-        with ui.card().classes('w-full p-3 bg-amber-50 border border-amber-200 mb-2'):
+        with ui.card().classes('w-full p-3').style('background:#1c1400; border:1px solid #f59e0b;'):
             ui.label(
                 f'⚠️ Показаны первые {PAGE_SIZE} из {total} аномалий. '
                 f'Обработайте их — остальные появятся автоматически.'
-            ).classes('text-amber-800 text-sm')
+            ).classes('text-amber-300 text-sm')
     else:
-        ui.label(f'Найдено аномалий: {total}').classes('text-sm text-gray-500 mb-2')
+        ui.label(f'Найдено аномалий: {total}').style('color:#9ca3af; font-size:0.85rem;')
+
+    # 5.5 Кнопка «Плановый приход всех»
+    def _mark_all_planned():
+        count = 0
+        for _, anom_row in page_anom.iterrows():
+            if anom_row['Наименование'] in dismissed:
+                continue
+            db.save_anomaly_to_db({
+                'item_name':        anom_row['Наименование'],
+                'anomaly_type':     '📦 Плановый приход',
+                'qty_system':       anom_row['Стало'],
+                'qty_physical':     anom_row['Было'],
+                'financial_impact': 0,
+                'source':           'Вручную (Массовое подтверждение)',
+                'status':           'Закрыта',
+                'comment':          'Штатное поступление товара',
+            })
+            if anom_row['Наименование'] not in dismissed:
+                dismissed.append(anom_row['Наименование'])
+            count += 1
+        ui.notify(f'📦 {count} аномалий закрыты как Плановый приход', type='positive')
+        refresh_fn.refresh()
+
+    with ui.row().classes('w-full items-center justify-between mb-3 flex-wrap gap-2'):
+        ui.label(f'Показано: {len(page_anom)} из {total}').style('color:#9ca3af; font-size:0.85rem;')
+        ui.button(
+            f'📦 Плановый приход всех ({len(page_anom)} шт.)',
+            on_click=_mark_all_planned,
+        ).props('color=positive outline no-caps').tooltip(
+            'Пометить все видимые аномалии как Плановый приход'
+        )
 
     # 6. Рисуем карточки
     for idx, row in page_anom.iterrows():
@@ -211,7 +243,7 @@ def _render_card(idx, row, df_inv, df_anomalies, expected_df, dismissed: list, r
     status_tag, help_text, color = _get_status_tag(row)
     color_cls = _TAG_COLORS.get(color, 'text-gray-500')
 
-    with ui.card().classes('w-full p-4 mb-4 shadow-md'):
+    with ui.card().classes('w-full p-4 mb-4').style('background:#111111; border:1px solid #2a2a2a;'):
 
         # ── Заголовок ─────────────────────────────────────────────────────────
         with ui.row().classes('w-full items-start gap-4 mb-2 flex-wrap'):
@@ -220,7 +252,7 @@ def _render_card(idx, row, df_inv, df_anomalies, expected_df, dismissed: list, r
                 ui.label(str(row.get('Артикул', '—'))).classes('font-mono text-sm font-semibold')
 
             with ui.column().classes('flex-1'):
-                ui.label(str(row['Наименование'])).classes('font-semibold text-base')
+                ui.label(str(row['Наименование'])).classes('font-semibold text-base').style('color:white;')
                 ui.label(f'{status_tag}  {help_text}').classes(f'text-xs {color_cls}')
 
             with ui.row().classes('gap-6 items-center ml-auto'):
@@ -239,12 +271,12 @@ def _render_card(idx, row, df_inv, df_anomalies, expected_df, dismissed: list, r
         # ── Fuzzy Match ───────────────────────────────────────────────────────
         best_match, ratio = find_best_invoice_match(row['Наименование'], expected_df)
         if best_match is not None and ratio > 0.4:
-            bg = 'bg-green-50 border border-green-200' if ratio >= 0.7 else 'bg-blue-50 border border-blue-200'
-            with ui.card().classes(f'w-full p-3 my-2 {bg}'):
+            border_col = '#22c55e' if ratio >= 0.7 else '#3b82f6'
+            with ui.card().classes('w-full p-3 my-2').style(f'background:#0d1a0d; border:1px solid {border_col};'):
                 ui.label(
                     f"💡 Найдено в накладной ({ratio:.0%}): "
                     f"{best_match['item_name']} ({best_match['qty_expected']} шт.)"
-                ).classes('text-sm mb-1')
+                ).style('color:#d1fae5; font-size:0.875rem;')
 
                 def _fuzzy_link(r=row, bm=best_match):
                     db.save_anomaly_to_db({
@@ -323,7 +355,7 @@ def _render_card(idx, row, df_inv, df_anomalies, expected_df, dismissed: list, r
                         ui.button(label, on_click=_make_handler(label)).classes('flex-1').props('outline')
 
         # ── Панель склейки ─────────────────────────────────────────────────────
-        with ui.card().classes('w-full p-4 bg-gray-50 mt-3') as link_panel:
+        with ui.card().classes('w-full p-4 mt-3').style('background:#161616; border:1px solid #374151;') as link_panel:
             link_panel.set_visibility(False)
             link_panel_ref['panel'] = link_panel
 

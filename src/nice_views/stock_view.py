@@ -5,6 +5,7 @@ stock_view.py — NiceGUI-версия вкладки склада.
 from nicegui import ui, run as ng_run
 import sys
 import os
+import subprocess
 import time
 import psutil
 import logging
@@ -50,6 +51,25 @@ def _scan_parser_processes() -> bool:
         except Exception:
             pass
     return False
+
+
+def _launch_parser() -> str:
+    """Запускает parser.py как отдельный фоновый процесс. Возвращает сообщение о результате."""
+    if _scan_parser_processes():
+        return 'already_running'
+    try:
+        parser_path = Path(__file__).resolve().parent.parent / 'parser.py'
+        python_exe  = Path(sys.executable)
+        subprocess.Popen(
+            [str(python_exe), str(parser_path)],
+            cwd=str(parser_path.parent.parent),  # project root
+            creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == 'win32' else 0,
+        )
+        # Сбрасываем TTL-кэш чтобы следующий _is_parser_running() увидел новый процесс
+        _PARSER_CACHE.update({'result': True, 'ts': time.time()})
+        return 'launched'
+    except Exception as exc:
+        return f'error:{exc}'
 
 
 def _is_parser_running() -> bool:
@@ -265,10 +285,39 @@ def _render_data_health(
             else:
                 ui.label('✅ Завершён').classes('text-green-400 font-bold text-xl')
             ui.label('Статус парсера').style('color:#9ca3af; font-size:0.8rem;')
-            ui.button(
-                '🔄 Обновить',
-                on_click=lambda: ui.navigate.to('/stock')
-            ).props('flat size=sm').classes('text-gray-400')
+            with ui.row().classes('gap-2 mt-1'):
+                ui.button(
+                    '🔄 Обновить',
+                    on_click=lambda: ui.navigate.to('/stock')
+                ).props('flat size=sm').classes('text-gray-400')
+
+                def _on_launch_click():
+                    result = _launch_parser()
+                    if result == 'launched':
+                        ui.notify(
+                            '🚀 Парсер запущен! Обновите страницу через минуту.',
+                            type='positive', timeout=5000
+                        )
+                        ui.navigate.to('/stock')
+                    elif result == 'already_running':
+                        ui.notify(
+                            '⚠️ Парсер уже работает.',
+                            type='warning', timeout=3000
+                        )
+                    else:
+                        ui.notify(
+                            f'❌ Ошибка запуска: {result}',
+                            type='negative', timeout=6000
+                        )
+
+                ui.button(
+                    '▶ Запустить парсер' if not is_running else '⏳ Уже запущен',
+                    on_click=_on_launch_click,
+                ).props(
+                    f'{"outline" if not is_running else "flat"} '
+                    f'color={"positive" if not is_running else "grey"} '
+                    f'size=sm {"disable" if is_running else ""}'
+                ).tooltip('Принудительно запустить сбор данных с сайта')
 
     # ── Таблица динамики ─────────────────────────────────────────────────
     ui.label(f'📊 Динамика за последние {len(df_stats)} дн.').classes(
@@ -341,6 +390,21 @@ def _render_data_health(
             if shown.empty:
                 ui.label('✅ Все позиции обработаны.').classes('text-green-400 text-sm')
                 return
+
+            # Ограничиваем отображение 50 записями — при неполном парсинге
+            # в списке могут оказаться тысячи товаров и страница зависает
+            DISPLAY_LIMIT = 50
+            total = len(shown)
+            if total > DISPLAY_LIMIT:
+                with ui.card().classes('w-full p-3 mb-3').style(
+                    'background:#1c1200; border:1px solid #f59e0b;'
+                ):
+                    ui.label(
+                        f'⚠️ Всего {total} товаров — показаны первые {DISPLAY_LIMIT}. '
+                        'Вероятно, парсер не завершил обход сайта. '
+                        'Запустите парсер повторно и дождитесь полного завершения.'
+                    ).classes('text-amber-300 text-sm')
+                shown = shown.head(DISPLAY_LIMIT)
 
             for _, lrow in shown.iterrows():
                 with ui.row().classes('w-full items-center gap-3 py-2 flex-wrap'):

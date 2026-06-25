@@ -40,7 +40,7 @@ logger.info(f'Log file: {LOG_PATH}')
 
 from nicegui import ui, app
 import db
-from nice_views import stock_view, anomalies_view, receiving_view, tasks_view, efficiency_view, dead_stock_view, velocity_view, ab_test_view
+from nice_views import stock_view, anomalies_view, receiving_view, tasks_view, efficiency_view, dead_stock_view, velocity_view, ab_test_view, system_view
 from nice_views.shared_layout import build_shell, DARK_CSS
 
 # ─── Перехватчик необработанных исключений NiceGUI ────────────────────────────
@@ -76,6 +76,7 @@ efficiency_view.setup_page()
 dead_stock_view.setup_page()
 velocity_view.setup_page()
 ab_test_view.setup_page()
+system_view.setup_page()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -4,6 +4,7 @@ import re
 import sqlite3
 import time
 import random
+import traceback
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -87,6 +88,17 @@ logging.basicConfig(
         logging.FileHandler(LOG_FILE, encoding='utf-8')
     ]
 )
+
+# Отдельный хендлер для фатальных ошибок — пишет в parser_critical.log
+# Добавляется через addHandler (basicConfig нельзя вызывать дважды)
+_CRITICAL_LOG = LOG_DIR / "parser_critical.log"
+_crit_handler = logging.FileHandler(_CRITICAL_LOG, encoding='utf-8', mode='a')
+_crit_handler.setLevel(logging.CRITICAL)
+_crit_handler.setFormatter(logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+))
+logging.getLogger().addHandler(_crit_handler)
 
 # --- МОДЕЛЬ ДАННЫХ ---
 @dataclass(slots=True)
@@ -381,4 +393,14 @@ def main() -> None:
     logging.info(f"⏱️ Общее время: {int(elapsed_seconds // 60)} мин {int(elapsed_seconds % 60)} сек")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        # Перехватываем ВСЕ необработанные исключения — записываем в
+        # parser_critical.log с полным traceback, затем пробрасываем дальше
+        # чтобы ОС получила ненулевой код возврата.
+        logging.critical(
+            "=== FATAL: парсер упал с необработанной ошибкой ===\n"
+            + traceback.format_exc()
+        )
+        raise

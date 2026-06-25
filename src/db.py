@@ -301,3 +301,74 @@ def get_all_historical_items() -> dict:
             result[name] = {"sku": sku, "is_active": is_active, "last_seen": last_seen}
             
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Системные утилиты (вкладка «Система»)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@functools.lru_cache(maxsize=1)
+def get_parse_days_stats() -> list:
+    """
+    Возвращает список словарей {'parse_date': str, 'items_count': int}
+    за всю историю парсинга, отсортированный от новых к старым.
+    Кэшируется — сбрасывать после любых изменений в таблице stocks.
+    """
+    if not DB_PATH.exists():
+        return []
+    with get_connection() as conn:
+        rows = conn.execute("""
+            SELECT DATE(report_timestamp) AS parse_date,
+                   COUNT(*)              AS items_count
+            FROM stocks
+            GROUP BY DATE(report_timestamp)
+            ORDER BY parse_date DESC
+        """).fetchall()
+    return [{"parse_date": row[0], "items_count": row[1]} for row in rows]
+
+
+def delete_day_data(date: str) -> None:
+    """
+    Каскадно удаляет все данные за указанный день (формат 'YYYY-MM-DD'):
+      - stocks          WHERE DATE(report_timestamp) = date
+      - anomaly_inbox   WHERE detected_date = date
+      - anomaly_log     WHERE DATE(detected_at) = date
+                          AND source = 'Автоматически'
+                          AND status = 'Закрыта'
+
+    После удаления немедленно вызывает update_anomaly_inbox() чтобы
+    пересчитать дельту между новыми «последними двумя днями» в stocks,
+    затем сбрасывает все lru_cache.
+    """
+    if not DB_PATH.exists():
+        return
+    with get_connection() as conn:
+        conn.execute(
+            "DELETE FROM stocks WHERE DATE(report_timestamp) = ?", (date,)
+        )
+        conn.execute(
+            "DELETE FROM anomaly_inbox WHERE detected_date = ?", (date,)
+        )
+        conn.execute(
+            """DELETE FROM anomaly_log
+               WHERE DATE(detected_at) = ?
+                 AND source = 'Автоматически'
+                 AND status = 'Закрыта'""",
+            (date,)
+        )
+        conn.commit()
+
+    # Пересчитываем inbox сразу, чтобы база была консистентна
+    update_anomaly_inbox()
+
+    # Сбрасываем ВСЕ lru_cache — любая страница получит свежие данные
+    for fn in (
+        load_inventory, load_anomalies, load_anomaly_report,
+        load_dead_stock_analysis, get_db_stats,
+        get_all_historical_items, get_parse_days_stats,
+    ):
+        try:
+            fn.cache_clear()
+        except Exception:
+            pass
+

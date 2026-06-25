@@ -140,6 +140,11 @@ def build_shell(current_route: str = '/'):
           .props('flat no-caps') \
           .classes('nav-btn w-full')
 
+        # ── Низ: Danger Zone ─────────────────────────────────────────────
+        ui.separator().style('background-color: #3f1515; margin: 8px 6px 4px 6px;')
+        ui.html('<span class="nav-section" style="color:#7f1d1d;">⚠️&nbsp; Danger Zone</span>')
+        _nav('⚙️  Система', '/system')
+
     # ── ШАПКА ────────────────────────────────────────────────────────────
     with ui.header(elevated=True).style(
         'background-color: #171717; border-bottom: 1px solid #2a2a2a;'

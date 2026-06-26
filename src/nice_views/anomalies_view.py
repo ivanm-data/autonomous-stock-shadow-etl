@@ -270,9 +270,8 @@ def _render_card(idx, row, df_inv, df_anomalies, expected_df, dismissed: list, r
 
         # ── Fuzzy Match ───────────────────────────────────────────────────────
         best_match, ratio = find_best_invoice_match(row['Наименование'], expected_df)
-        if best_match is not None and ratio > 0.4:
-            border_col = '#22c55e' if ratio >= 0.7 else '#3b82f6'
-            with ui.card().classes('w-full p-3 my-2').style(f'background:#0d1a0d; border:1px solid {border_col};'):
+        if best_match is not None and ratio > 0.75:
+            with ui.card().classes('w-full p-3 my-2').style('background:#0d1a0d; border:1px solid #22c55e;'):
                 ui.label(
                     f"💡 Найдено в накладной ({ratio:.0%}): "
                     f"{best_match['item_name']} ({best_match['qty_expected']} шт.)"

@@ -53,9 +53,17 @@ def update_anomaly_inbox():
                 history_count INTEGER,
                 old_name_alias TEXT,
                 old_sku_alias TEXT,
+                status TEXT DEFAULT 'new',
                 UNIQUE(detected_date, item_name)
             )
         """)
+        
+        # Миграция для существующих баз данных
+        try:
+            conn.execute("ALTER TABLE anomaly_inbox ADD COLUMN status TEXT DEFAULT 'new'")
+            conn.commit()
+        except Exception:
+            pass
         
         cursor = conn.execute("SELECT DISTINCT SUBSTR(report_timestamp, 1, 10) FROM stocks ORDER BY 1 DESC LIMIT 2")
         dates = [row[0] for row in cursor.fetchall()]
@@ -73,6 +81,14 @@ def update_anomaly_inbox():
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (today, row['sku'], row['item_name'], row['qty_old'], row['qty_new'], row['delta'], row['history_count'], row['old_name_alias'], row['old_sku_alias']))
         conn.commit()
+
+        # Автоматическая очистка старых данных (Garbage Collector)
+        try:
+            history_depth = CONFIG['database'].get('history_depth_days', 30)
+            conn.execute(f"DELETE FROM anomaly_inbox WHERE detected_date < date('now', '-{history_depth} days')")
+            conn.commit()
+        except Exception:
+            pass
 
 @functools.lru_cache(maxsize=1)
 def load_anomalies() -> pd.DataFrame:
@@ -93,7 +109,7 @@ def load_anomalies() -> pd.DataFrame:
                 old_name_alias,
                 old_sku_alias
             FROM anomaly_inbox
-            WHERE detected_date = (SELECT MAX(detected_date) FROM anomaly_inbox)
+            WHERE status = 'new' OR status IS NULL
         """, conn)
         return df
 
@@ -154,11 +170,11 @@ def load_anomaly_report(status="Открыта") -> pd.DataFrame:
         return pd.read_sql_query(query, conn, params={"status": status})
     
 def save_anomaly_to_db(data: dict):
-    """Записывает инцидент в базу и удаляет из Inbox"""
+    """Записывает инцидент в базу и обновляет статус в Inbox"""
     with get_connection() as conn:
         conn.execute(get_insert_anomaly_query(), data)
         try:
-            conn.execute("DELETE FROM anomaly_inbox WHERE item_name = ?", (data['item_name'],))
+            conn.execute("UPDATE anomaly_inbox SET status = 'processed' WHERE item_name = ?", (data['item_name'],))
         except Exception:
             pass
         conn.commit()

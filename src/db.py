@@ -53,9 +53,13 @@ def update_anomaly_inbox():
                 history_count INTEGER,
                 old_name_alias TEXT,
                 old_sku_alias TEXT,
-                status TEXT DEFAULT 'new',
-                UNIQUE(detected_date, item_name)
+                status TEXT DEFAULT 'new'
             )
+        """)
+        # Частичный уникальный индекс: только для 'new' записей (чтобы не дублировать активные аномалии)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_active_item
+            ON anomaly_inbox(item_name) WHERE status = 'new'
         """)
         
         # Миграция для существующих баз данных
@@ -76,9 +80,14 @@ def update_anomaly_inbox():
         
         for _, row in df.iterrows():
             conn.execute("""
-                INSERT OR IGNORE INTO anomaly_inbox
-                (detected_date, sku, item_name, qty_old, qty_new, delta, history_count, old_name_alias, old_sku_alias)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO anomaly_inbox
+                (detected_date, sku, item_name, qty_old, qty_new, delta, history_count, old_name_alias, old_sku_alias, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new')
+                ON CONFLICT(item_name) WHERE status = 'new'
+                DO UPDATE SET
+                    qty_new = excluded.qty_new,
+                    delta   = excluded.delta,
+                    sku     = excluded.sku
             """, (today, row['sku'], row['item_name'], row['qty_old'], row['qty_new'], row['delta'], row['history_count'], row['old_name_alias'], row['old_sku_alias']))
         conn.commit()
 

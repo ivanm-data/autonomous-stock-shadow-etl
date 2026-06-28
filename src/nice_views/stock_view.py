@@ -463,6 +463,13 @@ def setup_page():
         parser_now = await ng_run.io_bound(_is_parser_running)  # один вызов psutil
         df_stats   = await ng_run.io_bound(_get_parser_stats)
 
+        # Защита от None (если клиент был удалён во время io_bound)
+        if df_inv is None:     df_inv = pd.DataFrame()
+        if df_anom is None:    df_anom = pd.DataFrame()
+        if open_tasks is None: open_tasks = 0
+        if parser_now is None: parser_now = False
+        if df_stats is None:   df_stats = pd.DataFrame()
+
         with ui.column().classes('w-full p-4 gap-4').style(
             'background:#0d0d0d; min-height:100vh;'
         ):

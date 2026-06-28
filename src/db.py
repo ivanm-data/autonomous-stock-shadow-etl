@@ -53,21 +53,11 @@ def update_anomaly_inbox():
                 history_count INTEGER,
                 old_name_alias TEXT,
                 old_sku_alias TEXT,
-                status TEXT DEFAULT 'new'
+                UNIQUE(detected_date, item_name)
             )
         """)
-        # Частичный уникальный индекс: только для 'new' записей (чтобы не дублировать активные аномалии)
-        conn.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_active_item
-            ON anomaly_inbox(item_name) WHERE status = 'new'
-        """)
-        
-        # Миграция для существующих баз данных
-        try:
-            conn.execute("ALTER TABLE anomaly_inbox ADD COLUMN status TEXT DEFAULT 'new'")
-            conn.commit()
-        except Exception:
-            pass
+        # Чистим сломанный индекс, если он остался от предыдущей версии кода
+        conn.execute("DROP INDEX IF EXISTS idx_inbox_active_item")
         
         cursor = conn.execute("SELECT DISTINCT SUBSTR(report_timestamp, 1, 10) FROM stocks ORDER BY 1 DESC LIMIT 2")
         dates = [row[0] for row in cursor.fetchall()]
@@ -79,16 +69,18 @@ def update_anomaly_inbox():
         df = pd.read_sql_query(query, conn, params={"yesterday": yesterday, "today": today})
         
         for _, row in df.iterrows():
+            # Дедупликация: если товар уже ждёт проверки в inbox (за любую дату),
+            # новую запись НЕ создаём — пользователь и так пойдёт проверять.
             conn.execute("""
                 INSERT INTO anomaly_inbox
-                (detected_date, sku, item_name, qty_old, qty_new, delta, history_count, old_name_alias, old_sku_alias, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new')
-                ON CONFLICT(item_name) WHERE status = 'new'
-                DO UPDATE SET
-                    qty_new = excluded.qty_new,
-                    delta   = excluded.delta,
-                    sku     = excluded.sku
-            """, (today, row['sku'], row['item_name'], row['qty_old'], row['qty_new'], row['delta'], row['history_count'], row['old_name_alias'], row['old_sku_alias']))
+                (detected_date, sku, item_name, qty_old, qty_new, delta, history_count, old_name_alias, old_sku_alias)
+                SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM anomaly_inbox WHERE item_name = ?
+                )
+            """, (today, row['sku'], row['item_name'], row['qty_old'], row['qty_new'],
+                  row['delta'], row['history_count'], row['old_name_alias'], row['old_sku_alias'],
+                  row['item_name']))
         conn.commit()
 
         # Автоматическая очистка старых данных (Garbage Collector)
@@ -101,7 +93,7 @@ def update_anomaly_inbox():
 
 @functools.lru_cache(maxsize=1)
 def load_anomalies() -> pd.DataFrame:
-    """Читает аномалии из Inbox только за последнюю дату (сегодня)"""
+    """Читает все необработанные аномалии из Inbox (одна запись на товар)."""
     if not DB_PATH.exists(): return pd.DataFrame()
     
     update_anomaly_inbox() # Проверяем новые скачки перед загрузкой
@@ -118,7 +110,7 @@ def load_anomalies() -> pd.DataFrame:
                 old_name_alias,
                 old_sku_alias
             FROM anomaly_inbox
-            WHERE status = 'new' OR status IS NULL
+            ORDER BY detected_date DESC
         """, conn)
         return df
 
@@ -179,11 +171,11 @@ def load_anomaly_report(status="Открыта") -> pd.DataFrame:
         return pd.read_sql_query(query, conn, params={"status": status})
     
 def save_anomaly_to_db(data: dict):
-    """Записывает инцидент в базу и обновляет статус в Inbox"""
+    """Записывает инцидент в базу и удаляет из Inbox"""
     with get_connection() as conn:
         conn.execute(get_insert_anomaly_query(), data)
         try:
-            conn.execute("UPDATE anomaly_inbox SET status = 'processed' WHERE item_name = ?", (data['item_name'],))
+            conn.execute("DELETE FROM anomaly_inbox WHERE item_name = ?", (data['item_name'],))
         except Exception:
             pass
         conn.commit()

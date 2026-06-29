@@ -193,11 +193,24 @@ def save_to_db(conn: sqlite3.Connection, products: List[Product]) -> None:
         logging.error(f"❌ Ошибка БД: {e}")
 
 def load_state() -> Optional[Tuple[deque, Set[str], int]]:
-    """O(1) загрузка чекпоинта."""
+    """O(1) загрузка чекпоинта. Если чекпоинт от другого дня — сбрасываем."""
     if STATE_PATH.exists():
         try:
             with open(STATE_PATH, 'r', encoding='utf-8') as f:
                 data = json.load(f)
+
+            # Проверяем дату: чекпоинт от прошлого дня не годится —
+            # парсер должен начинать сбор заново каждый новый день.
+            saved_date = data.get('saved_date', '')
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            if saved_date != today_str:
+                logging.warning(
+                    f"⏭️ Чекпоинт от {saved_date or '?'} устарел "
+                    f"(сегодня {today_str}). Начинаем заново."
+                )
+                clear_state()
+                return None
+
             logging.info("♻️ Восстанавливаем прерванный сеанс из чекпоинта...")
             return deque(data['queue']), set(data['seen_urls']), data['total_scraped']
         except Exception as e:
@@ -205,11 +218,12 @@ def load_state() -> Optional[Tuple[deque, Set[str], int]]:
     return None
 
 def save_state(queue: deque, seen_urls: Set[str], total_scraped: int) -> None:
-    """O(N) сериализация состояния."""
+    """O(N) сериализация состояния с датой для контроля актуальности."""
     state = {
         'queue': list(queue),
         'seen_urls': list(seen_urls),
-        'total_scraped': total_scraped
+        'total_scraped': total_scraped,
+        'saved_date': datetime.now().strftime('%Y-%m-%d'),
     }
     with open(STATE_PATH, 'w', encoding='utf-8') as f:
         json.dump(state, f)

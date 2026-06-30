@@ -38,27 +38,23 @@ def get_db_stats():
         return {"start": res[0], "end": res[1], "days_count": res[2]}
 
 def update_anomaly_inbox():
-    """Фоновый сборщик: сохраняет найденные аномалии в персистентный буфер (Inbox)"""
+    """
+    Фоновый сборщик аномалий.
+
+    Жизненный цикл записи в inbox:
+      1. Парсер обнаружил скачок остатка → INSERT (если товара нет в inbox)
+         или UPDATE (если товар уже ждёт проверки — обновляем дельту).
+      2. Запись висит в inbox бессрочно, пока пользователь не обработает её.
+      3. При обработке — DELETE из inbox (функция save_anomaly_to_db).
+
+    Один товар = максимум одна строка в inbox (UNIQUE по item_name).
+    """
     if not DB_PATH.exists(): return
     with get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS anomaly_inbox (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                detected_date DATE,
-                sku TEXT,
-                item_name TEXT,
-                qty_old INTEGER,
-                qty_new INTEGER,
-                delta INTEGER,
-                history_count INTEGER,
-                old_name_alias TEXT,
-                old_sku_alias TEXT,
-                UNIQUE(detected_date, item_name)
-            )
-        """)
-        # Чистим сломанный индекс, если он остался от предыдущей версии кода
-        conn.execute("DROP INDEX IF EXISTS idx_inbox_active_item")
-        
+        # ── Миграция: если таблица со старой схемой UNIQUE(detected_date, item_name),
+        #    пересоздаём с UNIQUE(item_name) и дедуплицируем данные. ─────────────
+        _migrate_inbox_schema(conn)
+
         cursor = conn.execute("SELECT DISTINCT SUBSTR(report_timestamp, 1, 10) FROM stocks ORDER BY 1 DESC LIMIT 2")
         dates = [row[0] for row in cursor.fetchall()]
         if len(dates) < 2: return
@@ -69,27 +65,102 @@ def update_anomaly_inbox():
         df = pd.read_sql_query(query, conn, params={"yesterday": yesterday, "today": today})
         
         for _, row in df.iterrows():
-            # Дедупликация: если товар уже ждёт проверки в inbox (за любую дату),
-            # новую запись НЕ создаём — пользователь и так пойдёт проверять.
+            # Upsert: INSERT новый товар, или UPDATE дельту если он уже ждёт проверки.
+            # При UPDATE сохраняем оригинальную detected_date (дата первого обнаружения),
+            # но обновляем qty_old, qty_new и delta — актуальные цифры для проверки.
             conn.execute("""
                 INSERT INTO anomaly_inbox
-                (detected_date, sku, item_name, qty_old, qty_new, delta, history_count, old_name_alias, old_sku_alias)
-                SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM anomaly_inbox WHERE item_name = ?
-                )
+                (detected_date, sku, item_name, qty_old, qty_new, delta,
+                 history_count, old_name_alias, old_sku_alias)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(item_name) DO UPDATE SET
+                    qty_old = excluded.qty_old,
+                    qty_new = excluded.qty_new,
+                    delta   = excluded.delta,
+                    sku     = excluded.sku
             """, (today, row['sku'], row['item_name'], row['qty_old'], row['qty_new'],
-                  row['delta'], row['history_count'], row['old_name_alias'], row['old_sku_alias'],
-                  row['item_name']))
+                  row['delta'], row['history_count'], row['old_name_alias'], row['old_sku_alias']))
         conn.commit()
 
-        # Автоматическая очистка старых данных (Garbage Collector)
-        try:
-            history_depth = CONFIG['database'].get('history_depth_days', 30)
-            conn.execute(f"DELETE FROM anomaly_inbox WHERE detected_date < date('now', '-{history_depth} days')")
-            conn.commit()
-        except Exception:
-            pass
+
+def _migrate_inbox_schema(conn):
+    """
+    Однократная миграция: старая схема UNIQUE(detected_date, item_name)
+    → новая схема UNIQUE(item_name).
+    Дедуплицирует данные (оставляет самую свежую запись на каждый товар).
+    """
+    # Проверяем текущую схему
+    index_info = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='anomaly_inbox'"
+    ).fetchone()
+
+    if index_info is None:
+        # Таблицы нет — создаём сразу с правильной схемой
+        conn.execute("""
+            CREATE TABLE anomaly_inbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                detected_date DATE,
+                sku TEXT,
+                item_name TEXT UNIQUE,
+                qty_old INTEGER,
+                qty_new INTEGER,
+                delta INTEGER,
+                history_count INTEGER,
+                old_name_alias TEXT,
+                old_sku_alias TEXT
+            )
+        """)
+        conn.commit()
+        return
+
+    schema_sql = index_info[0] or ''
+    if 'UNIQUE' not in schema_sql or 'detected_date' not in schema_sql:
+        # Схема уже новая (или нет UNIQUE вообще) — пропускаем
+        # Но на всякий случай чистим старые индексы
+        conn.execute("DROP INDEX IF EXISTS idx_inbox_active_item")
+        return
+
+    # Старая схема — мигрируем
+    import logging
+    _log = logging.getLogger('shadow_stock')
+
+    # Чистим от предыдущей прерванной миграции (если была)
+    conn.execute("DROP TABLE IF EXISTS anomaly_inbox_new")
+
+    # 1. Сохраняем только самую свежую запись на каждый item_name
+    conn.execute("""
+        CREATE TABLE anomaly_inbox_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            detected_date DATE,
+            sku TEXT,
+            item_name TEXT UNIQUE,
+            qty_old INTEGER,
+            qty_new INTEGER,
+            delta INTEGER,
+            history_count INTEGER,
+            old_name_alias TEXT,
+            old_sku_alias TEXT
+        )
+    """)
+    conn.execute("""
+        INSERT INTO anomaly_inbox_new
+        (detected_date, sku, item_name, qty_old, qty_new, delta,
+         history_count, old_name_alias, old_sku_alias)
+        SELECT detected_date, sku, item_name, qty_old, qty_new, delta,
+               history_count, old_name_alias, old_sku_alias
+        FROM anomaly_inbox
+        WHERE id IN (
+            SELECT MAX(id) FROM anomaly_inbox GROUP BY item_name
+        )
+    """)
+    old_count = conn.execute("SELECT COUNT(*) FROM anomaly_inbox").fetchone()[0]
+    new_count = conn.execute("SELECT COUNT(*) FROM anomaly_inbox_new").fetchone()[0]
+    conn.execute("DROP TABLE anomaly_inbox")
+    conn.execute("ALTER TABLE anomaly_inbox_new RENAME TO anomaly_inbox")
+    conn.execute("DROP INDEX IF EXISTS idx_inbox_active_item")
+    conn.commit()
+
+    _log.info('anomaly_inbox migrated: %d -> %d rows (deduplicated)', old_count, new_count)
 
 @functools.lru_cache(maxsize=1)
 def load_anomalies() -> pd.DataFrame:

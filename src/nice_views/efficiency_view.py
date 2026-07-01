@@ -120,25 +120,59 @@ def _kpi_data(include_tests: bool) -> dict | None:
 
 
 def _ghosting_data() -> pd.DataFrame:
+    """
+    Данные по каждому дню парсинга:
+    - количество собранных товаров
+    - количество уникальных категорий
+    - длительность сессии в минутах
+    - диагностика: норма / мерцание сайта / сбой парсера
+    """
     try:
         with db.get_connection() as conn:
-            return pd.read_sql_query("""
-                WITH DailyStocks AS (
-                    SELECT SUBSTR(report_timestamp, 1, 10) AS date,
-                           item_name, quantity
-                    FROM stocks WHERE quantity > 0
-                )
-                SELECT d1.date AS "Дата",
-                       COUNT(d1.item_name) AS "Пропало на следующий день"
-                FROM DailyStocks d1
-                LEFT JOIN DailyStocks d2
-                    ON d1.item_name = d2.item_name
-                    AND date(d2.date) = date(d1.date, '+1 day')
-                WHERE d2.item_name IS NULL
-                  AND d1.date < date('now', 'localtime')
-                GROUP BY d1.date
-                ORDER BY d1.date ASC
+            df = pd.read_sql_query("""
+                SELECT
+                    DATE(report_timestamp)        AS date,
+                    COUNT(*)                      AS items,
+                    COUNT(DISTINCT category)      AS cats,
+                    ROUND(
+                        (julianday(MAX(report_timestamp)) -
+                         julianday(MIN(report_timestamp))) * 1440
+                    )                             AS duration_min
+                FROM stocks
+                GROUP BY DATE(report_timestamp)
+                ORDER BY date ASC
             """, conn)
+
+        if df.empty:
+            return df
+
+        # Медиана по категориям за все дни (эталон нормального парсинга)
+        median_cats  = df['cats'].median()
+        median_items = df['items'].median()
+        # Порог «нормально» = 80% от медианы
+        cat_threshold  = median_cats  * 0.80
+        item_threshold = median_items * 0.80
+
+        def _diagnose(row):
+            if row['items'] >= item_threshold:
+                return '✅ Норма'
+            # Мало товаров. Смотрим на категории:
+            if row['cats'] >= cat_threshold:
+                # Категории обошёл нормально, товаров мало → сайт мерцал
+                return '🌐 Мерцание сайта'
+            # Категорий тоже мало → парсер упал рано
+            return '🤖 Сбой парсера'
+
+        df['diagnosis'] = df.apply(_diagnose, axis=1)
+
+        # Переименовываем для отображения
+        df = df.rename(columns={
+            'date':         'Дата',
+            'items':        'Собрано товаров',
+            'cats':         'Разделов посещено',
+            'duration_min': 'Время сессии (мин)',
+        })
+        return df
     except Exception:
         return pd.DataFrame()
 
@@ -563,46 +597,130 @@ def setup_page():
                 ui.separator().style('background:#2a2a2a;')
 
                 # ═══ 2. Ghosting Rate ════════════════════════════════════════
-                ui.label('👻 Уровень мерцания сайта (Ghosting Rate)').classes(
+                ui.label('👻 Диагностика парсинга (Ghosting Rate)').classes(
                     'text-white text-xl font-bold'
                 )
                 ui.label(
-                    'Товары, которые вчера имели положительный остаток, '
-                    'а сегодня бесследно пропали с витрины.'
+                    'Каждый день парсинга: сколько товаров и разделов собрал парсер '
+                    'и какова вероятная причина отклонений.'
                 ).style('color:#9ca3af; font-size:0.82rem;')
+
                 df_ghost = _d_ghost[0] if _d_ghost[0] is not None else pd.DataFrame()
-                if not df_ghost.empty and len(df_ghost) > 1:
-                    avg_g = df_ghost['Пропало на следующий день'].mean()
-                    ui.echart({
-                        'backgroundColor': 'transparent',
-                        'tooltip': {'trigger': 'axis'},
-                        'xAxis':  {'type': 'category',
-                                    'data': df_ghost['Дата'].tolist(),
-                                    'axisLabel': {'color': '#6b7280'},
-                                    'axisLine':  {'lineStyle': {'color': '#2a2a2a'}}},
-                        'yAxis':  {'type': 'value',
-                                    'axisLabel':  {'color': '#6b7280'},
-                                    'splitLine':  {'lineStyle': {'color': '#1f1f1f'}}},
-                        'series': [{'type': 'bar',
-                                    'data': df_ghost['Пропало на следующий день'].tolist(),
-                                    'itemStyle': {'color': '#ef4444', 'borderRadius': 3}}],
-                        'grid':   {'left':'3%','right':'4%','bottom':'3%','containLabel':True},
-                    }).classes('w-full').style('height:260px;')
-                    if avg_g > 0:
-                        with ui.card().classes('w-full p-3').style(
-                            'background:#1e1b4b; border:1px solid #818cf8;'
-                        ):
-                            ui.label(
-                                f'💡 В среднем {int(avg_g)} товаров исчезает с сайта каждый день. '
-                                'На вкладке «Склад» вы вручную классифицируете.'
-                            ).classes('text-indigo-200 text-sm')
-                else:
+
+                if df_ghost.empty or len(df_ghost) < 2:
                     with ui.card().classes('w-full p-3').style(
                         'background:#052e16; border:1px solid #22c55e;'
                     ):
                         ui.label(
-                            '✅ Мало данных для построения графика, или сайт работает идеально.'
+                            '✅ Мало данных для анализа.'
                         ).classes('text-green-400 text-sm')
+                else:
+                    # ── Бар-чарт «Собрано товаров по дням» ──────────────────
+                    # Цвет зависит от диагноза
+                    color_map = {
+                        '✅ Норма':          '#22c55e',
+                        '🌐 Мерцание сайта': '#f97316',
+                        '🤖 Сбой парсера':  '#ef4444',
+                    }
+                    bar_colors = [
+                        color_map.get(d, '#6b7280')
+                        for d in df_ghost['diagnosis'].tolist()
+                    ]
+                    ui.echart({
+                        'backgroundColor': 'transparent',
+                        'tooltip': {
+                            'trigger': 'axis',
+                            'formatter': '{b}<br/>Товаров: {c}'
+                        },
+                        'xAxis': {
+                            'type': 'category',
+                            'data': df_ghost['Дата'].tolist(),
+                            'axisLabel': {'color': '#6b7280', 'rotate': 30},
+                            'axisLine':  {'lineStyle': {'color': '#2a2a2a'}}
+                        },
+                        'yAxis': {
+                            'type': 'value',
+                            'axisLabel':  {'color': '#6b7280'},
+                            'splitLine':  {'lineStyle': {'color': '#1f1f1f'}}
+                        },
+                        'series': [{
+                            'type': 'bar',
+                            'name': 'Товаров собрано',
+                            'data': [
+                                {'value': v, 'itemStyle': {'color': c}}
+                                for v, c in zip(
+                                    df_ghost['Собрано товаров'].tolist(),
+                                    bar_colors
+                                )
+                            ],
+                            'itemStyle': {'borderRadius': 3},
+                        }],
+                        'grid': {'left':'3%','right':'4%','bottom':'12%','containLabel':True},
+                    }).classes('w-full').style('height:280px;')
+
+                    # ── Легенда ─────────────────────────────────────────────
+                    with ui.row().classes('gap-4 flex-wrap mb-2'):
+                        for label, color in color_map.items():
+                            with ui.row().classes('items-center gap-1'):
+                                ui.element('div').style(
+                                    f'width:12px; height:12px; border-radius:2px; background:{color};'
+                                )
+                                ui.label(label).style('color:#9ca3af; font-size:0.8rem;')
+
+                    # ── Детальная таблица ────────────────────────────────────
+                    ui.label('📋 Детализация по дням').classes(
+                        'text-white font-semibold mt-2'
+                    )
+
+                    # Цветовой рендер диагноза через cellStyle
+                    diag_col = {
+                        'field': 'diagnosis',
+                        'headerName': 'Диагноз',
+                        'sortable': True,
+                        'width': 200,
+                        'cellClassRules': {
+                            'text-green-400':  "value.startsWith('✅')",
+                            'text-orange-400': "value.startsWith('🌐')",
+                            'text-red-400':    "value.startsWith('🤖')",
+                        },
+                    }
+
+                    table_df = df_ghost[['Дата', 'Собрано товаров', 'Разделов посещено',
+                                         'Время сессии (мин)', 'diagnosis']].copy()
+                    table_df = table_df.rename(columns={'diagnosis': 'Диагноз'})
+
+                    ui.aggrid({
+                        'columnDefs': [
+                            {'field': 'Дата',                 'headerName': 'Дата',                 'sortable': True, 'width': 120},
+                            {'field': 'Собрано товаров',      'headerName': 'Собрано товаров',      'sortable': True, 'width': 150},
+                            {'field': 'Разделов посещено',    'headerName': 'Разделов посещено',    'sortable': True, 'width': 170},
+                            {'field': 'Время сессии (мин)',   'headerName': 'Время сессии (мин)',   'sortable': True, 'width': 170},
+                            diag_col,
+                        ],
+                        'rowData':   table_df.to_dict('records'),
+                        'domLayout': 'autoHeight',
+                        'rowClassRules': {
+                            'bg-orange-950': "data.Диагноз.startsWith('🌐')",
+                            'bg-red-950':    "data.Диагноз.startsWith('🤖')",
+                        },
+                    }).classes('w-full ag-theme-balham-dark')
+
+                    # ── Итоговый инсайт ──────────────────────────────────────
+                    n_flicker = (df_ghost['diagnosis'] == '🌐 Мерцание сайта').sum()
+                    n_parser  = (df_ghost['diagnosis'] == '🤖 Сбой парсера').sum()
+                    if n_flicker > 0 or n_parser > 0:
+                        with ui.card().classes('w-full p-3 mt-2').style(
+                            'background:#1e1b4b; border:1px solid #818cf8;'
+                        ):
+                            parts = []
+                            if n_flicker:
+                                parts.append(f'🌐 {n_flicker} дн. — вероятное мерцание сайта')
+                            if n_parser:
+                                parts.append(f'🤖 {n_parser} дн. — вероятный сбой парсера/ноута')
+                            ui.label(
+                                '💡 Обнаружены аномальные дни: ' + ' | '.join(parts)
+                            ).classes('text-indigo-200 text-sm')
+
                 ui.separator().style('background:#2a2a2a;')
 
                 # ═══ 3. Risk Value Modeling ══════════════════════════════════

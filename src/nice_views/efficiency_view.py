@@ -698,12 +698,11 @@ def setup_page():
                             diag_col,
                         ],
                         'rowData':   table_df.to_dict('records'),
-                        'domLayout': 'autoHeight',
                         'rowClassRules': {
                             'bg-orange-950': "data.Диагноз.startsWith('🌐')",
                             'bg-red-950':    "data.Диагноз.startsWith('🤖')",
                         },
-                    }).classes('w-full ag-theme-balham-dark')
+                    }).classes('w-full ag-theme-balham-dark').style('height:400px;')
 
                     # ── Итоговый инсайт ──────────────────────────────────────
                     n_flicker = (df_ghost['diagnosis'] == '🌐 Мерцание сайта').sum()
